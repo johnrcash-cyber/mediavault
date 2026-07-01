@@ -22,7 +22,7 @@ app = Flask(__name__)
 MEDIA_TYPES = ("Movies", "Television", "Music", "Games", "Books", "Other")
 FORMATS = (
     "DVD", "Blu-ray", "4K", "CD", "Vinyl", "Cassette",
-    "Game Disc", "Cartridge", "Digital", "Other",
+    "FLAC", "MP3", "Game Disc", "Cartridge", "Digital", "Other",
 )
 STATUSES = ("Owned", "In Collection", "Wishlist", "Upgrade Candidate")
 CONDITIONS = ("New", "Like New", "Good", "Fair", "Poor", "Unknown")
@@ -119,6 +119,31 @@ def init_db() -> None:
 def row_to_dict(row: sqlite3.Row) -> dict:
     item = dict(row)
     item["tags"] = [tag.strip() for tag in (item.get("tags") or "").split(",") if tag.strip()]
+    return item
+
+
+def row_to_card_dict(row: sqlite3.Row) -> dict:
+    item = row_to_dict(row)
+    raw_metadata = item.pop("metadata_json", None)
+    provider = item.pop("metadata_provider", None)
+    has_jellyfin = bool(item.pop("has_jellyfin", False))
+    try:
+        metadata = json.loads(raw_metadata or "{}")
+    except json.JSONDecodeError:
+        metadata = {}
+    item["title"] = metadata.get("title") or item["title"]
+    item["year"] = metadata.get("year") or item["year"]
+    item["poster_url"] = metadata.get("poster_url") or ""
+    item["overview"] = metadata.get("overview") or ""
+    item["runtime_minutes"] = metadata.get("runtime_minutes")
+    item["rating"] = metadata.get("rating")
+    item["artist"] = metadata.get("artist") or ""
+    item["track_count"] = metadata.get("track_count")
+    item["metadata_provider"] = (
+        metadata.get("metadata_source")
+        or (provider.upper() if provider else "")
+    )
+    item["sources"] = ["Jellyfin"] if has_jellyfin else []
     return item
 
 
@@ -282,7 +307,8 @@ def provider_settings() -> dict:
     rows = db().execute(
         "SELECT key, value FROM app_settings WHERE key IN "
         "('omdb_api_key', 'tmdb_api_key', 'metadata_provider_priority', "
-        "'discogs_token', 'rawg_api_key')"
+        "'music_provider_priority', 'discogs_token', 'lastfm_api_key', "
+        "'rawg_api_key')"
     ).fetchall()
     values = {row["key"]: row["value"] for row in rows}
     return {
@@ -291,8 +317,306 @@ def provider_settings() -> dict:
         "metadata_provider_priority": values.get(
             "metadata_provider_priority", "omdb,tmdb"
         ),
+        "music_provider_priority": values.get(
+            "music_provider_priority", "musicbrainz,discogs,coverartarchive,lastfm"
+        ),
         "discogs_token": values.get("discogs_token", ""),
+        "lastfm_api_key": values.get("lastfm_api_key", ""),
         "rawg_api_key": values.get("rawg_api_key", ""),
+    }
+
+
+def public_json_request(url: str, provider: str) -> dict:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "MediaVault/1.0 (personal media catalog)",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return {}
+        raise ValueError(f"{provider} returned HTTP {exc.code}.") from exc
+    except urllib.error.URLError as exc:
+        raise ValueError(
+            f"Could not reach {provider}: {getattr(exc, 'reason', exc)}"
+        ) from exc
+    except (TimeoutError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{provider} did not return a valid response.") from exc
+
+
+def musicbrainz_request(path: str, query: dict | None = None) -> dict:
+    params = {**(query or {}), "fmt": "json"}
+    url = (
+        f"https://musicbrainz.org/ws/2{path}?"
+        f"{urllib.parse.urlencode(params)}"
+    )
+    return public_json_request(url, "MusicBrainz")
+
+
+def cover_art_for_release(release_id: str) -> str:
+    data = public_json_request(
+        f"https://coverartarchive.org/release/{urllib.parse.quote(release_id)}",
+        "Cover Art Archive",
+    )
+    images = data.get("images") or []
+    front = next((image for image in images if image.get("front")), None)
+    if not front:
+        return ""
+    thumbnails = front.get("thumbnails") or {}
+    return thumbnails.get("500") or thumbnails.get("large") or front.get("image") or ""
+
+
+def artist_credit_text(raw: dict) -> str:
+    return "".join(
+        f"{part.get('name', '')}{part.get('joinphrase', '')}"
+        for part in (raw.get("artist-credit") or [])
+    ).strip()
+
+
+def normalize_musicbrainz_release(raw: dict) -> dict:
+    media = raw.get("media") or []
+    tracks = []
+    total_duration_ms = 0
+    for medium in media:
+        for track in medium.get("tracks") or []:
+            recording = track.get("recording") or {}
+            length = track.get("length") or recording.get("length") or 0
+            total_duration_ms += length
+            tracks.append({
+                "number": track.get("number") or str(len(tracks) + 1),
+                "title": track.get("title") or recording.get("title") or "Untitled",
+                "duration_seconds": round(length / 1000) if length else None,
+            })
+    label_info = raw.get("label-info") or []
+    labels = [
+        info.get("label", {}).get("name")
+        for info in label_info if info.get("label", {}).get("name")
+    ]
+    catalog_numbers = [
+        info.get("catalog-number") for info in label_info
+        if info.get("catalog-number")
+    ]
+    release_group = raw.get("release-group") or {}
+    genres = [
+        genre.get("name") for genre in (
+            raw.get("genres") or release_group.get("genres") or []
+        ) if genre.get("name")
+    ]
+    release_types = [
+        release_group.get("primary-type"),
+        *(release_group.get("secondary-types") or []),
+    ]
+    date = raw.get("date") or ""
+    return {
+        "title": raw.get("title") or "Untitled",
+        "album_title": raw.get("title") or "Untitled",
+        "artist": artist_credit_text(raw),
+        "year": int(date[:4]) if date[:4].isdigit() else None,
+        "overview": "",
+        "genres": genres,
+        "runtime_minutes": round(total_duration_ms / 60000) if total_duration_ms else None,
+        "duration_seconds": round(total_duration_ms / 1000) if total_duration_ms else None,
+        "rating": None,
+        "director": "",
+        "cast": [],
+        "studio": "",
+        "release_date": date,
+        "track_count": len(tracks) or sum(medium.get("track-count", 0) for medium in media),
+        "track_listing": tracks,
+        "label": ", ".join(labels),
+        "catalog_number": ", ".join(catalog_numbers),
+        "edition": raw.get("disambiguation") or (
+            ", ".join(filter(None, [raw.get("country"), raw.get("status")]))
+        ),
+        "release_type": ", ".join(filter(None, release_types)),
+        "external_id": raw.get("id") or "",
+        "metadata_source": "MusicBrainz",
+        "artwork_source": "Cover Art Archive",
+        "poster_url": cover_art_for_release(raw.get("id", "")),
+        "backdrop_url": "",
+        "artist_image_url": "",
+    }
+
+
+def fetch_musicbrainz_release(external_id: str) -> dict:
+    if not re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+        r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        str(external_id),
+    ):
+        raise ValueError("Invalid MusicBrainz release ID.")
+    raw = musicbrainz_request(
+        f"/release/{external_id}",
+        {"inc": "recordings+artist-credits+labels+release-groups+genres"},
+    )
+    if not raw.get("id"):
+        raise ValueError("MusicBrainz release not found.")
+    return normalize_musicbrainz_release(raw)
+
+
+def discogs_request(path: str, query: dict | None = None) -> dict:
+    token = provider_settings()["discogs_token"].strip()
+    if not token:
+        raise ValueError("Configure your Discogs token in Settings first.")
+    params = {**(query or {}), "token": token}
+    return public_json_request(
+        f"https://api.discogs.com{path}?{urllib.parse.urlencode(params)}",
+        "Discogs",
+    )
+
+
+def duration_to_seconds(value: str) -> int | None:
+    parts = str(value or "").split(":")
+    if not parts or not all(part.isdigit() for part in parts):
+        return None
+    total = 0
+    for part in parts:
+        total = total * 60 + int(part)
+    return total or None
+
+
+def normalize_discogs_release(raw: dict) -> dict:
+    tracks = []
+    total_seconds = 0
+    for index, track in enumerate(raw.get("tracklist") or [], start=1):
+        seconds = duration_to_seconds(track.get("duration"))
+        total_seconds += seconds or 0
+        tracks.append({
+            "number": track.get("position") or str(index),
+            "title": track.get("title") or "Untitled",
+            "duration_seconds": seconds,
+        })
+    artists = ", ".join(
+        artist.get("name", "").replace(" (2)", "")
+        for artist in (raw.get("artists") or []) if artist.get("name")
+    )
+    labels = raw.get("labels") or []
+    formats = raw.get("formats") or []
+    image = next(
+        (image for image in (raw.get("images") or []) if image.get("type") == "primary"),
+        (raw.get("images") or [{}])[0],
+    )
+    year = raw.get("year")
+    return {
+        "title": raw.get("title") or "Untitled",
+        "album_title": raw.get("title") or "Untitled",
+        "artist": artists,
+        "year": int(year) if str(year).isdigit() else None,
+        "overview": raw.get("notes") or "",
+        "genres": list(dict.fromkeys([*(raw.get("genres") or []), *(raw.get("styles") or [])])),
+        "runtime_minutes": round(total_seconds / 60) if total_seconds else None,
+        "duration_seconds": total_seconds or None,
+        "rating": (raw.get("community") or {}).get("rating", {}).get("average"),
+        "director": "", "cast": [], "studio": "",
+        "release_date": str(year or ""),
+        "track_count": len(tracks),
+        "track_listing": tracks,
+        "label": ", ".join(label.get("name", "") for label in labels if label.get("name")),
+        "catalog_number": ", ".join(label.get("catno", "") for label in labels if label.get("catno")),
+        "edition": ", ".join(
+            value for fmt in formats for value in (fmt.get("descriptions") or [])
+        ),
+        "release_type": ", ".join(fmt.get("name", "") for fmt in formats if fmt.get("name")),
+        "external_id": str(raw.get("id", "")),
+        "metadata_source": "Discogs",
+        "artwork_source": "Discogs",
+        "poster_url": image.get("uri") or image.get("resource_url") or "",
+        "backdrop_url": "", "artist_image_url": "",
+    }
+
+
+def fetch_discogs_release(external_id: str) -> dict:
+    if not str(external_id).isdigit():
+        raise ValueError("Invalid Discogs release ID.")
+    return normalize_discogs_release(discogs_request(f"/releases/{external_id}"))
+
+
+def lastfm_request(params: dict) -> dict:
+    key = provider_settings()["lastfm_api_key"].strip()
+    if not key:
+        raise ValueError("Configure your Last.fm API key in Settings first.")
+    query = {**params, "api_key": key, "format": "json"}
+    data = public_json_request(
+        f"https://ws.audioscrobbler.com/2.0/?{urllib.parse.urlencode(query)}",
+        "Last.fm",
+    )
+    if data.get("error"):
+        raise ValueError(data.get("message") or "Last.fm could not complete the request.")
+    return data
+
+
+def lastfm_external_id(artist: str, album: str) -> str:
+    return urllib.parse.urlencode({"artist": artist, "album": album})
+
+
+def fetch_lastfm_album(external_id: str) -> dict:
+    identity = urllib.parse.parse_qs(external_id)
+    artist = (identity.get("artist") or [""])[0]
+    album = (identity.get("album") or [""])[0]
+    if not artist or not album:
+        raise ValueError("Invalid Last.fm album identity.")
+    raw = lastfm_request({
+        "method": "album.getinfo", "artist": artist,
+        "album": album, "autocorrect": 1,
+    }).get("album") or {}
+    tracks_raw = (raw.get("tracks") or {}).get("track") or []
+    if isinstance(tracks_raw, dict):
+        tracks_raw = [tracks_raw]
+    tracks = []
+    total = 0
+    for index, track in enumerate(tracks_raw, 1):
+        seconds = int(track.get("duration") or 0) or None
+        total += seconds or 0
+        tracks.append({
+            "number": str((track.get("@attr") or {}).get("rank") or index),
+            "title": track.get("name") or "Untitled",
+            "duration_seconds": seconds,
+        })
+    images = raw.get("image") or []
+    poster = next(
+        (image.get("#text") for image in reversed(images) if image.get("#text")), ""
+    )
+    tags = (raw.get("tags") or {}).get("tag") or []
+    if isinstance(tags, dict):
+        tags = [tags]
+    release_date = str(raw.get("releasedate") or "").strip()
+    artist_name = raw.get("artist") or artist
+    artist_image = ""
+    try:
+        artist_info = lastfm_request({
+            "method": "artist.getinfo", "artist": artist_name, "autocorrect": 1,
+        }).get("artist") or {}
+        artist_images = artist_info.get("image") or []
+        artist_image = next(
+            (
+                image.get("#text") for image in reversed(artist_images)
+                if image.get("#text")
+            ),
+            "",
+        )
+    except ValueError:
+        pass
+    return {
+        "title": raw.get("name") or album,
+        "album_title": raw.get("name") or album,
+        "artist": artist_name,
+        "year": next((int(part) for part in release_date.replace(",", " ").split() if len(part) == 4 and part.isdigit()), None),
+        "overview": ((raw.get("wiki") or {}).get("summary") or ""),
+        "genres": [tag.get("name") for tag in tags if tag.get("name")],
+        "runtime_minutes": round(total / 60) if total else None,
+        "duration_seconds": total or None,
+        "rating": None, "director": "", "cast": [], "studio": "",
+        "release_date": release_date,
+        "track_count": len(tracks), "track_listing": tracks,
+        "label": "", "catalog_number": "", "edition": "", "release_type": "Album",
+        "external_id": external_id, "metadata_source": "Last.fm",
+        "artwork_source": "Last.fm", "poster_url": poster,
+        "backdrop_url": "", "artist_image_url": artist_image,
     }
 
 
@@ -368,6 +692,137 @@ def fetch_provider_movie(provider: str, external_id: str) -> dict:
     if provider == "tmdb":
         return fetch_tmdb_movie(external_id)
     raise ValueError("Unsupported movie metadata provider.")
+
+
+def provider_order() -> list[str]:
+    configured = provider_settings()
+    order = [
+        provider.strip()
+        for provider in configured["metadata_provider_priority"].split(",")
+        if provider.strip() in ("omdb", "tmdb")
+    ]
+    return [
+        provider for provider in order
+        if configured.get(f"{provider}_api_key")
+    ]
+
+
+def find_provider_movie(provider: str, title: str, year: int | None) -> str | None:
+    target = normalized_title(title)
+    if provider == "omdb":
+        params = {"s": title, "type": "movie", "page": 1}
+        if year:
+            params["y"] = str(year)
+        try:
+            response = omdb_request(params)
+        except ValueError as exc:
+            if "not found" in str(exc).casefold():
+                return None
+            raise
+        candidates = response.get("Search", [])
+        for candidate in candidates:
+            candidate_year = str(candidate.get("Year") or "")[:4]
+            if normalized_title(candidate.get("Title") or "") == target and (
+                not year or not candidate_year.isdigit() or int(candidate_year) == year
+            ):
+                return candidate.get("imdbID")
+        return None
+    if provider == "tmdb":
+        params = {
+            "query": title, "include_adult": "false",
+            "language": "en-US", "page": 1,
+        }
+        if year:
+            params["primary_release_year"] = str(year)
+        response = tmdb_request("/search/movie", params)
+        for candidate in response.get("results", []):
+            release_year = str(candidate.get("release_date") or "")[:4]
+            if normalized_title(candidate.get("title") or "") == target and (
+                not year or not release_year.isdigit() or int(release_year) == year
+            ):
+                return str(candidate.get("id"))
+        return None
+    return None
+
+
+def enrich_media_item(item_id: int) -> tuple[str, dict]:
+    item = db().execute(
+        "SELECT id, title, year, media_type FROM media WHERE id = ?", (item_id,)
+    ).fetchone()
+    if item is None:
+        raise ValueError("Item not found.")
+    attachment = db().execute(
+        "SELECT * FROM metadata_attachments WHERE media_id = ?", (item_id,)
+    ).fetchone()
+    if item["media_type"] == "Music":
+        if not attachment:
+            raise LookupError(
+                "Choose a music metadata source before refreshing this album."
+            )
+        music_fetchers = {
+            "musicbrainz": fetch_musicbrainz_release,
+            "discogs": fetch_discogs_release,
+            "lastfm": fetch_lastfm_album,
+        }
+        fetcher = music_fetchers.get(attachment["provider"])
+        if not fetcher:
+            raise ValueError("This music metadata provider cannot be refreshed.")
+        metadata = fetcher(attachment["external_id"])
+        db().execute(
+            "UPDATE metadata_attachments SET metadata_json = ?, refreshed_at = ? "
+            "WHERE id = ?",
+            (
+                json.dumps(metadata, separators=(",", ":")),
+                datetime.now(timezone.utc).isoformat(),
+                attachment["id"],
+            ),
+        )
+        db().commit()
+        return "musicbrainz", metadata
+    if item["media_type"] != "Movies":
+        raise LookupError("Metadata enrichment is not available for this media type yet.")
+    order = provider_order()
+    if not order:
+        raise ValueError("Configure an OMDb or TMDB API key in Settings first.")
+    errors = []
+    for provider in order:
+        try:
+            external_id = None
+            if attachment and attachment["provider"] == provider:
+                external_id = attachment["external_id"]
+            if not external_id:
+                external_id = find_provider_movie(
+                    provider, item["title"], item["year"]
+                )
+            if not external_id:
+                continue
+            metadata = fetch_provider_movie(provider, external_id)
+            now = datetime.now(timezone.utc).isoformat()
+            db().execute(
+                """
+                INSERT INTO metadata_attachments (
+                    media_id, provider, external_id, metadata_json,
+                    refreshed_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(media_id) DO UPDATE SET
+                    provider = excluded.provider,
+                    external_id = excluded.external_id,
+                    metadata_json = excluded.metadata_json,
+                    refreshed_at = excluded.refreshed_at
+                """,
+                (
+                    item_id, provider, external_id,
+                    json.dumps(metadata, separators=(",", ":")), now, now,
+                ),
+            )
+            db().commit()
+            return provider, metadata
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            db().rollback()
+            errors.append(f"{provider.upper()}: {exc}")
+    if errors:
+        raise ValueError("; ".join(errors))
+    raise LookupError("No exact provider match found for this title and year.")
 
 
 def tmdb_request(path: str, query: dict | None = None) -> dict:
@@ -509,22 +964,34 @@ def list_media():
 
     if search:
         where.append(
-            "(title LIKE ? OR upc LIKE ? OR tags LIKE ? OR physical_location LIKE ?)"
+            "(m.title LIKE ? OR m.upc LIKE ? OR m.tags LIKE ? OR m.physical_location LIKE ?)"
         )
         wildcard = f"%{search}%"
         params.extend([wildcard] * 4)
     if media_type:
-        where.append("media_type = ?")
+        where.append("m.media_type = ?")
         params.append(media_type)
     if status:
-        where.append("status = ?")
+        where.append("m.status = ?")
         params.append(status)
 
     clause = f"WHERE {' AND '.join(where)}" if where else ""
     rows = db().execute(
-        f"SELECT * FROM media {clause} ORDER BY created_at DESC, id DESC", params
+        f"""
+        SELECT m.*, ma.provider AS metadata_provider, ma.metadata_json,
+               EXISTS(
+                   SELECT 1 FROM jellyfin_sources js
+                   WHERE js.media_id = m.id
+                     AND js.action IN ('attached', 'created')
+               ) AS has_jellyfin
+        FROM media m
+        LEFT JOIN metadata_attachments ma ON ma.media_id = m.id
+        {clause}
+        ORDER BY m.created_at DESC, m.id DESC
+        """,
+        params,
     ).fetchall()
-    return jsonify([row_to_dict(row) for row in rows])
+    return jsonify([row_to_card_dict(row) for row in rows])
 
 
 @app.get("/api/media/<int:item_id>")
@@ -557,7 +1024,14 @@ def media_quick_view(item_id: int):
     metadata_source = None
     if metadata_attachment:
         metadata = json.loads(metadata_attachment["metadata_json"] or "{}")
-        metadata["metadata_source"] = metadata_attachment["provider"].upper()
+        provider_names = {
+            "omdb": "OMDb", "tmdb": "TMDB",
+            "musicbrainz": "MusicBrainz",
+            "discogs": "Discogs", "lastfm": "Last.fm",
+        }
+        metadata["metadata_source"] = provider_names.get(
+            metadata_attachment["provider"], metadata_attachment["provider"]
+        )
         metadata["external_id"] = metadata_attachment["external_id"]
         metadata["refreshed_at"] = metadata_attachment["refreshed_at"]
         metadata_source = {
@@ -567,9 +1041,6 @@ def media_quick_view(item_id: int):
         }
     jellyfin_source = None
     if source:
-        if not metadata_attachment:
-            metadata = json.loads(source["metadata_json"] or "{}")
-            metadata["metadata_source"] = "Jellyfin"
         jellyfin_source = {
             "id": source["id"],
             "item_id": source["jellyfin_item_id"],
@@ -577,10 +1048,6 @@ def media_quick_view(item_id: int):
             "server_url": source["server_url"],
             "action": source["action"],
         }
-        if not metadata_attachment and metadata.get("has_poster"):
-            metadata["poster_url"] = f"/api/jellyfin/image/{source['jellyfin_item_id']}/Primary"
-        if not metadata_attachment and metadata.get("has_backdrop"):
-            metadata["backdrop_url"] = f"/api/jellyfin/image/{source['jellyfin_item_id']}/Backdrop"
     return jsonify({
         "collector": collector,
         "metadata": metadata,
@@ -597,67 +1064,45 @@ def media_quick_view(item_id: int):
 
 @app.post("/api/media/<int:item_id>/refresh-metadata")
 def refresh_media_metadata(item_id: int):
-    attachment = db().execute(
-        "SELECT * FROM metadata_attachments WHERE media_id = ?", (item_id,)
-    ).fetchone()
-    if attachment:
-        try:
-            metadata = fetch_provider_movie(
-                attachment["provider"], attachment["external_id"]
-            )
-            db().execute(
-                """
-                UPDATE metadata_attachments
-                SET metadata_json = ?, refreshed_at = ?
-                WHERE id = ?
-                """,
-                (
-                    json.dumps(metadata, separators=(",", ":")),
-                    datetime.now(timezone.utc).isoformat(),
-                    attachment["id"],
-                ),
-            )
-            db().commit()
-            return media_quick_view(item_id)
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-    source = db().execute(
-        """
-        SELECT * FROM jellyfin_sources
-        WHERE media_id = ? AND action IN ('attached', 'created')
-        ORDER BY created_at DESC LIMIT 1
-        """,
-        (item_id,),
-    ).fetchone()
-    if source is None:
-        return jsonify({"error": "This item has no Jellyfin source to refresh."}), 400
-    settings = jellyfin_settings()
     try:
-        raw = jellyfin_request(
-            settings,
-            f"/Items/{urllib.parse.quote(source['jellyfin_item_id'])}",
-            {"Fields": "Overview,Genres,RunTimeTicks,CommunityRating,People,Studios,"
-                       "PremiereDate,ProviderIds,Path,ImageTags,BackdropImageTags"},
-        )
-        metadata = normalize_jellyfin_item(
-            raw,
-            {"id": source["jellyfin_library_id"], "name": source["jellyfin_library_name"]},
-        )
-        db().execute(
-            """
-            UPDATE jellyfin_sources
-            SET source_title = ?, source_year = ?, metadata_json = ?
-            WHERE id = ?
-            """,
-            (
-                metadata["title"], metadata["year"],
-                json.dumps(metadata, separators=(",", ":")), source["id"],
-            ),
-        )
-        db().commit()
+        enrich_media_item(item_id)
         return media_quick_view(item_id)
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/metadata/refresh-all")
+def refresh_all_metadata():
+    movies = db().execute(
+        "SELECT id, title FROM media WHERE media_type = 'Movies' ORDER BY title"
+    ).fetchall()
+    result = {
+        "processed": 0,
+        "enriched": 0,
+        "skipped": 0,
+        "failed": 0,
+        "failures": [],
+    }
+    for movie in movies:
+        result["processed"] += 1
+        try:
+            enrich_media_item(movie["id"])
+            result["enriched"] += 1
+        except LookupError as exc:
+            result["skipped"] += 1
+            result["failures"].append({
+                "id": movie["id"], "title": movie["title"],
+                "status": "skipped", "error": str(exc),
+            })
+        except (ValueError, sqlite3.Error) as exc:
+            result["failed"] += 1
+            result["failures"].append({
+                "id": movie["id"], "title": movie["title"],
+                "status": "failed", "error": str(exc),
+            })
+    return jsonify(result)
 
 
 @app.get("/api/jellyfin/image/<item_id>/<image_type>")
@@ -760,9 +1205,19 @@ def dashboard():
         ).fetchone()[0],
     }
     recent = connection.execute(
-        "SELECT * FROM media ORDER BY created_at DESC, id DESC LIMIT 5"
+        """
+        SELECT m.*, ma.provider AS metadata_provider, ma.metadata_json,
+               EXISTS(
+                   SELECT 1 FROM jellyfin_sources js
+                   WHERE js.media_id = m.id
+                     AND js.action IN ('attached', 'created')
+               ) AS has_jellyfin
+        FROM media m
+        LEFT JOIN metadata_attachments ma ON ma.media_id = m.id
+        ORDER BY m.created_at DESC, m.id DESC LIMIT 5
+        """
     ).fetchall()
-    return jsonify({**counts, "recent": [row_to_dict(row) for row in recent]})
+    return jsonify({**counts, "recent": [row_to_card_dict(row) for row in recent]})
 
 
 @app.get("/api/settings/jellyfin")
@@ -785,8 +1240,11 @@ def get_provider_settings():
         "tmdb_api_key": "",
         "has_tmdb_api_key": bool(settings["tmdb_api_key"]),
         "metadata_provider_priority": settings["metadata_provider_priority"],
+        "music_provider_priority": settings["music_provider_priority"],
         "discogs_token": "",
         "has_discogs_token": bool(settings["discogs_token"]),
+        "lastfm_api_key": "",
+        "has_lastfm_api_key": bool(settings["lastfm_api_key"]),
         "rawg_api_key": "",
         "has_rawg_api_key": bool(settings["rawg_api_key"]),
     })
@@ -805,7 +1263,9 @@ def save_provider_settings():
             in ("omdb,tmdb", "tmdb,omdb")
             else current["metadata_provider_priority"]
         ),
+        "music_provider_priority": "musicbrainz,discogs,coverartarchive,lastfm",
         "discogs_token": str(payload.get("discogs_token", "")).strip() or current["discogs_token"],
+        "lastfm_api_key": str(payload.get("lastfm_api_key", "")).strip() or current["lastfm_api_key"],
         "rawg_api_key": str(payload.get("rawg_api_key", "")).strip() or current["rawg_api_key"],
     }
     db().executemany(
@@ -902,17 +1362,147 @@ def search_omdb_movies():
         return jsonify({"error": str(exc)}), 400
 
 
+@app.get("/api/metadata/musicbrainz/search")
+def search_musicbrainz_releases():
+    album = request.args.get("q", "").strip()
+    artist = request.args.get("artist", "").strip()
+    year = request.args.get("year", "").strip()
+    if not album:
+        return jsonify({"error": "Enter an album title to search."}), 400
+    safe_album = album.replace('"', r'\"')
+    parts = [f'release:"{safe_album}"']
+    if artist:
+        safe_artist = artist.replace('"', r'\"')
+        parts.append(f'artist:"{safe_artist}"')
+    if year.isdigit():
+        parts.append(f"date:{year}")
+    try:
+        response = musicbrainz_request(
+            "/release/", {"query": " AND ".join(parts), "limit": 12}
+        )
+        results = []
+        for raw in response.get("releases", []):
+            date = raw.get("date") or ""
+            release_id = raw.get("id") or ""
+            release_group = raw.get("release-group") or {}
+            results.append({
+                "external_id": release_id,
+                "title": raw.get("title") or "Untitled",
+                "artist": artist_credit_text(raw),
+                "year": int(date[:4]) if date[:4].isdigit() else None,
+                "overview": ", ".join(filter(None, [
+                    raw.get("country"), raw.get("status"),
+                    release_group.get("primary-type"),
+                ])),
+                "rating": None,
+                "poster_url": (
+                    f"https://coverartarchive.org/release/{release_id}/front-250"
+                    if release_id and (raw.get("cover-art-archive") or {}).get("front")
+                    else ""
+                ),
+                "metadata_source": "MusicBrainz",
+            })
+        return jsonify(results)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/metadata/discogs/search")
+def search_discogs_releases():
+    album = request.args.get("q", "").strip()
+    artist = request.args.get("artist", "").strip()
+    year = request.args.get("year", "").strip()
+    if not album:
+        return jsonify({"error": "Enter an album title to search."}), 400
+    params = {"release_title": album, "type": "release", "per_page": 12}
+    if artist:
+        params["artist"] = artist
+    if year.isdigit():
+        params["year"] = year
+    try:
+        response = discogs_request("/database/search", params)
+        results = []
+        for raw in response.get("results", []):
+            title = raw.get("title") or "Untitled"
+            result_artist, _, album_title = title.partition(" - ")
+            results.append({
+                "external_id": str(raw.get("id", "")),
+                "title": album_title or title,
+                "artist": result_artist if album_title else "",
+                "year": raw.get("year"),
+                "overview": ", ".join(raw.get("format") or []),
+                "rating": None,
+                "poster_url": raw.get("cover_image") or raw.get("thumb") or "",
+                "metadata_source": "Discogs",
+            })
+        return jsonify(results)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/metadata/lastfm/search")
+def search_lastfm_albums():
+    album = request.args.get("q", "").strip()
+    artist_filter = request.args.get("artist", "").strip()
+    if not album:
+        return jsonify({"error": "Enter an album title to search."}), 400
+    try:
+        response = lastfm_request({
+            "method": "album.search", "album": album, "limit": 12,
+        })
+        matches = ((response.get("results") or {}).get("albummatches") or {}).get("album") or []
+        if isinstance(matches, dict):
+            matches = [matches]
+        results = []
+        for raw in matches:
+            artist = raw.get("artist") or ""
+            if artist_filter and normalized_title(artist_filter) != normalized_title(artist):
+                continue
+            images = raw.get("image") or []
+            poster = next(
+                (image.get("#text") for image in reversed(images) if image.get("#text")), ""
+            )
+            results.append({
+                "external_id": lastfm_external_id(artist, raw.get("name") or album),
+                "title": raw.get("name") or album,
+                "artist": artist,
+                "year": None,
+                "overview": "Select to retrieve the full Last.fm album record.",
+                "rating": None, "poster_url": poster,
+                "metadata_source": "Last.fm",
+            })
+        return jsonify(results)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
 @app.post("/api/media/<int:item_id>/metadata")
 def attach_media_metadata(item_id: int):
-    if db().execute("SELECT 1 FROM media WHERE id = ?", (item_id,)).fetchone() is None:
+    media = db().execute(
+        "SELECT media_type FROM media WHERE id = ?", (item_id,)
+    ).fetchone()
+    if media is None:
         return jsonify({"error": "Item not found."}), 404
     payload = request.get_json(silent=True) or {}
     provider = str(payload.get("provider", "")).casefold()
     external_id = str(payload.get("external_id", "")).strip()
-    if provider not in ("omdb", "tmdb"):
-        return jsonify({"error": "Choose OMDb or TMDB for movie metadata."}), 400
+    allowed = (
+        ("musicbrainz", "discogs", "lastfm") if media["media_type"] == "Music"
+        else ("omdb", "tmdb") if media["media_type"] in ("Movies", "Television")
+        else ()
+    )
+    if provider not in allowed:
+        return jsonify({"error": "Choose a supported provider for this media type."}), 400
     try:
-        metadata = fetch_provider_movie(provider, external_id)
+        metadata = (
+            fetch_musicbrainz_release(external_id)
+            if provider == "musicbrainz"
+            else fetch_discogs_release(external_id)
+            if provider == "discogs"
+            else fetch_lastfm_album(external_id)
+            if provider == "lastfm"
+            else fetch_provider_movie(provider, external_id)
+        )
         now = datetime.now(timezone.utc).isoformat()
         db().execute(
             """

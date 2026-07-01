@@ -58,3 +58,29 @@ Provider metadata is stored separately from the catalog record. Refreshing,
 changing, or removing a source never overwrites or deletes collector-owned data.
 Discogs and RAWG credentials can be stored for future Music and Games enrichment;
 OpenLibrary requires no key and is reserved for the Books phase.
+
+Use **Settings → Metadata Providers → Refresh All Metadata** to enrich every
+movie in provider-priority order. MediaVault tries OMDb first by default, falls
+back to TMDB when configured, requires a safe title/year match, and reports
+processed, enriched, skipped, and failed counts. Per-item refresh uses the same
+priority rules. Jellyfin is displayed only as a library/source indicator, never
+as the metadata provider.
+
+Enriched metadata also appears throughout the collection grid and Dashboard
+Recently Added cards, including poster art, short summaries, runtime, rating,
+provider, and attached source badges. Unenriched items retain MediaVault's
+original artwork placeholder.
+
+## Music metadata
+
+Music enrichment follows **MusicBrainz → Discogs → Cover Art Archive → Last.fm**.
+MusicBrainz release search and refresh provide album/artist identity, release
+year and type, genres, track counts and listings, duration, label, catalog
+number, and edition data. Cover Art Archive supplies release-specific covers.
+Discogs tokens and Last.fm keys can be configured as additional searchable
+providers; Last.fm artist imagery is used when available.
+
+Music Quick View separates provider metadata from MediaVault ownership and shows
+the physical/digital format (CD, Vinyl, Cassette, FLAC, or MP3) and Jellyfin as
+independent sources. Refreshing or changing a music provider never changes
+collector status, purchases, locations, tags, or notes.

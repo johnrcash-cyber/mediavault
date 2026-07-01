@@ -92,8 +92,14 @@
               <label><span>OMDb API Key</span><input id="omdbKey" type="password" placeholder="Enter your OMDb API key"><small id="omdbKeyHint">Primary movie metadata provider.</small><a class="provider-help" href="https://www.omdbapi.com/apikey.aspx" target="_blank" rel="noopener noreferrer">Get a free OMDb API key ↗</a></label>
               <label><span>TMDB API Key or Read Access Token</span><input id="tmdbKey" type="password" placeholder="Enter your TMDB credential"><small id="tmdbKeyHint">Optional movie and television provider.</small><a class="provider-help" href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener noreferrer">TMDB API account settings ↗</a><a class="provider-help subtle" href="https://developer.themoviedb.org/docs/authentication-application" target="_blank" rel="noopener noreferrer">Authentication documentation ↗</a></label>
               <label class="full"><span>Movie / TV Provider Priority</span><select id="providerPriority"><option value="omdb,tmdb">1. OMDb  →  2. TMDB</option><option value="tmdb,omdb">1. TMDB  →  2. OMDb</option></select><small>The first configured provider is selected by default when searching.</small></label>
-              <label><span>Discogs Token</span><input id="discogsToken" type="password" placeholder="Coming next"><small>Reserved for Music enrichment.</small></label>
-              <label><span>RAWG API Key</span><input id="rawgKey" type="password" placeholder="Optional"><small>Reserved for Games enrichment.</small></label>
+              <div class="provider-divider full"><span>MUSIC METADATA PROVIDERS</span></div>
+              <label class="full"><span>Music Provider Priority</span><select id="musicProviderPriority"><option value="musicbrainz,discogs,coverartarchive,lastfm">1. MusicBrainz → 2. Discogs → 3. Cover Art Archive → 4. Last.fm</option></select><small>MusicBrainz and Cover Art Archive require no API key.</small></label>
+              <label><span>MusicBrainz</span><input value="Enabled — no key required" readonly><small>Primary release, edition, and track metadata.</small><a class="provider-help" href="https://musicbrainz.org/doc/MusicBrainz_API" target="_blank" rel="noopener noreferrer">MusicBrainz API help ↗</a></label>
+              <label><span>Cover Art Archive</span><input value="Enabled — no key required" readonly><small>Album artwork for MusicBrainz releases.</small><a class="provider-help" href="https://musicbrainz.org/doc/Cover_Art_Archive/API" target="_blank" rel="noopener noreferrer">Cover Art Archive help ↗</a></label>
+              <label><span>Discogs Token</span><input id="discogsToken" type="password" placeholder="Optional"><small>Additional release and edition provider.</small><a class="provider-help" href="https://www.discogs.com/settings/developers" target="_blank" rel="noopener noreferrer">Discogs developer settings ↗</a></label>
+              <label><span>Last.fm API Key</span><input id="lastfmKey" type="password" placeholder="Optional"><small>Additional album and artist provider.</small><a class="provider-help" href="https://www.last.fm/api/account/create" target="_blank" rel="noopener noreferrer">Create a Last.fm API account ↗</a></label>
+              <div class="provider-divider full"><span>GAMES</span></div>
+              <label class="full"><span>RAWG API Key</span><input id="rawgKey" type="password" placeholder="Optional"><small>Reserved for Games enrichment.</small></label>
               <p class="form-error full" id="providerError"></p>
               <div class="settings-actions full">
                 <button type="button" class="button secondary" id="testOmdb">Test OMDb</button>
@@ -101,6 +107,21 @@
                 <button type="submit" class="button primary">Save Providers</button>
               </div>
             </form>
+            <div class="bulk-refresh">
+              <div><p class="eyebrow">LIBRARY ENRICHMENT</p><h3>Refresh All Metadata</h3><p>Enrich every movie using your provider priority. Collector data is never changed.</p></div>
+              <button type="button" class="button secondary" id="refreshAllMetadata">Refresh All Metadata</button>
+            </div>
+            <div class="bulk-status" id="bulkStatus" hidden>
+              <div class="bulk-status-head"><strong id="bulkStatusTitle">Refresh started</strong><span id="bulkStatusNote"></span></div>
+              <div class="bulk-counts">
+                <span><small>PROCESSED</small><b id="bulkProcessed">0</b></span>
+                <span><small>ENRICHED</small><b id="bulkEnriched">0</b></span>
+                <span><small>SKIPPED</small><b id="bulkSkipped">0</b></span>
+                <span><small>FAILED</small><b id="bulkFailed">0</b></span>
+              </div>
+              <button class="text-button" id="viewFailedItems" hidden>View failed items</button>
+              <div class="failed-items" id="failedItems" hidden></div>
+            </div>
           </div>
           <div class="settings-panel">
             <div class="settings-panel-head">
@@ -158,12 +179,14 @@
           </div>
           <div class="source-chips" id="quickSources"></div>
           <p class="quick-overview" id="quickOverview"></p>
+          <div class="metadata-labels"><span>Metadata Provider</span><span id="quickMetadataProvider">Manual / none</span></div>
           <div class="metadata-grid" id="metadataGrid"></div>
           <div class="collector-section">
             <div class="section-head"><div><h3>Ownership & collection</h3><p>Managed by MediaVault</p></div></div>
             <div class="collector-grid" id="collectorGrid"></div>
           </div>
           <div class="notes-section" id="quickNotes" hidden><small>NOTES</small><p></p></div>
+          <div class="track-section" id="quickTracks" hidden><div class="section-head"><div><h3>Track listing</h3><p id="trackSummary"></p></div></div><ol id="trackList"></ol></div>
         </div>
       </div>
     </div>
@@ -179,6 +202,7 @@
         <div class="search-fields">
           <select id="metadataProvider"><option value="omdb">OMDb</option><option value="tmdb">TMDB</option></select>
           <input id="metadataQuery" required placeholder="Movie title">
+          <input id="metadataArtist" placeholder="Artist" hidden>
           <input id="metadataYear" type="number" min="1880" max="2100" placeholder="Year">
           <button class="button primary" type="submit" id="metadataSearchButton">Search OMDb</button>
         </div>

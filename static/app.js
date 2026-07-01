@@ -1,6 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => document.querySelectorAll(selector);
-const state = { query: "", type: "", status: "", view: "dashboard", items: [], jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb" };
+const state = { query: "", type: "", status: "", view: "dashboard", items: [], jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviders: ["musicbrainz"] };
 const typeIcons = { Movies: "▶", Television: "TV", Music: "♫", Games: "✦", Books: "B", Other: "MV" };
 
 async function api(url, options = {}) {
@@ -20,11 +20,27 @@ function escapeHtml(value = "") {
 
 function card(item) {
   const statusClass = item.status === "Wishlist" ? "wishlist" : item.status === "Upgrade Candidate" ? "upgrade" : "";
+  const providerClass = (item.metadata_provider || "").toLowerCase();
+  const detailBits = [
+    item.year || "Year unknown",
+    item.media_type,
+    item.artist || "",
+    item.runtime_minutes ? `${item.runtime_minutes} min` : "",
+  ].filter(Boolean).join(" · ");
+  const sourceBadges = (item.sources || []).map((source) =>
+    `<span class="mini-badge source">${escapeHtml(source)}</span>`
+  ).join("");
   return `<article class="media-card type-${escapeHtml(item.media_type)}" data-id="${item.id}">
-    <div class="cover"><span class="cover-icon">${typeIcons[item.media_type] || "MV"}</span><span class="format-badge">${escapeHtml(item.format)}</span></div>
+    <div class="cover ${item.poster_url ? "has-poster" : ""}">
+      ${item.poster_url ? `<img src="${escapeHtml(item.poster_url)}" alt="" loading="lazy">` : `<span class="cover-icon">${typeIcons[item.media_type] || "MV"}</span>`}
+      ${item.metadata_provider ? `<span class="provider-badge ${providerClass}">${escapeHtml(item.metadata_provider)}</span>` : ""}
+      <span class="format-badge">${escapeHtml(item.format)}</span>
+    </div>
     <div class="card-body"><h3 title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</h3>
-      <p>${item.year || "Year unknown"} · ${escapeHtml(item.media_type)}</p>
-      <div class="card-meta"><span class="status-pill ${statusClass}">${escapeHtml(item.status)}</span><span>${escapeHtml(item.physical_location || item.condition || "")}</span></div>
+      <p class="card-details">${escapeHtml(detailBits)}</p>
+      ${item.overview ? `<p class="card-summary">${escapeHtml(item.overview)}</p>` : '<p class="card-summary empty">Metadata summary not available.</p>'}
+      ${sourceBadges ? `<div class="card-sources">${sourceBadges}</div>` : ""}
+      <div class="card-meta"><span class="status-pill ${statusClass}">${escapeHtml(item.status)}</span><span class="rating">${item.rating ? `★ ${Number(item.rating).toFixed(1)}` : escapeHtml(item.physical_location || item.condition || "")}</span></div>
     </div></article>`;
 }
 
@@ -75,17 +91,23 @@ async function loadProviderSettings() {
   try {
     const data = await api("/api/settings/providers");
     state.providerPriority = data.metadata_provider_priority || "omdb,tmdb";
+    state.musicProviders = ["musicbrainz"];
+    if (data.has_discogs_token) state.musicProviders.push("discogs");
+    if (data.has_lastfm_api_key) state.musicProviders.push("lastfm");
     $("#omdbKey").value = "";
     $("#tmdbKey").value = "";
     $("#discogsToken").value = "";
+    $("#lastfmKey").value = "";
     $("#rawgKey").value = "";
     $("#tmdbKey").placeholder = data.has_tmdb_api_key ? "TMDB credential saved — leave blank to keep it" : "Enter your TMDB credential";
     $("#discogsToken").placeholder = data.has_discogs_token ? "Discogs token saved — leave blank to keep it" : "Coming next";
+    $("#lastfmKey").placeholder = data.has_lastfm_api_key ? "Last.fm key saved — leave blank to keep it" : "Optional";
     $("#rawgKey").placeholder = data.has_rawg_api_key ? "RAWG key saved — leave blank to keep it" : "Optional";
     $("#tmdbKeyHint").textContent = data.has_tmdb_api_key ? "A TMDB credential is stored locally on the server." : "Used for Movies and Television metadata.";
     $("#omdbKey").placeholder = data.has_omdb_api_key ? "OMDb key saved — leave blank to keep it" : "Enter your OMDb API key";
     $("#omdbKeyHint").textContent = data.has_omdb_api_key ? "An OMDb key is stored locally on the server." : "Primary movie metadata provider.";
     $("#providerPriority").value = state.providerPriority;
+    $("#musicProviderPriority").value = data.music_provider_priority || "musicbrainz,discogs,coverartarchive,lastfm";
   } catch (error) { $("#providerError").textContent = error.message; }
 }
 
@@ -165,6 +187,15 @@ function fact(label, value) {
   return `<div><small>${escapeHtml(label)}</small><strong>${escapeHtml(String(display))}</strong></div>`;
 }
 
+function formatDuration(seconds) {
+  const value = Number(seconds);
+  if (!value) return "";
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
+  const remaining = Math.floor(value % 60);
+  return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}` : `${minutes}:${String(remaining).padStart(2, "0")}`;
+}
+
 async function openQuickView(itemId) {
   const data = await api(`/api/media/${itemId}/quick-view`);
   state.quickItem = data;
@@ -173,11 +204,20 @@ async function openQuickView(itemId) {
   $("#quickTitle").textContent = metadata.title || collector.title;
   $("#quickType").textContent = `${collector.media_type} · ${collector.format}`;
   $("#quickSubtitle").textContent = [metadata.year || collector.year, metadata.runtime_minutes ? `${metadata.runtime_minutes} min` : "", metadata.rating ? `★ ${Number(metadata.rating).toFixed(1)}` : ""].filter(Boolean).join("  ·  ");
-  $("#quickOverview").textContent = metadata.overview || "No overview is available. Attach a Jellyfin source to enrich this item with read-only media metadata.";
+  $("#quickOverview").textContent = metadata.overview || (collector.media_type === "Music"
+    ? "Album metadata is available through MusicBrainz. Choose Change Metadata Source to find the exact release."
+    : "No overview is available. Attach an OMDb or TMDB metadata provider to enrich this item.");
+  $("#quickMetadataProvider").textContent = metadata.metadata_source || "Manual / none";
   $("#metadataGrid").innerHTML = [
-    fact("Metadata source", metadata.metadata_source),
     fact("Last refreshed", metadata.refreshed_at ? new Date(metadata.refreshed_at).toLocaleString() : ""),
+    fact("Artist", metadata.artist),
     fact("Genres", metadata.genres),
+    fact("Track count", metadata.track_count),
+    fact("Duration", metadata.duration_seconds ? formatDuration(metadata.duration_seconds) : ""),
+    fact("Label", metadata.label),
+    fact("Catalog number", metadata.catalog_number),
+    fact("Edition", metadata.edition),
+    fact("Release type", metadata.release_type),
     fact("Director", metadata.director),
     fact("Cast", metadata.cast),
     fact("Studio", metadata.studio),
@@ -197,19 +237,25 @@ async function openQuickView(itemId) {
   const sourceLabels = [];
   if (data.metadata_source) sourceLabels.push(`<span class="source-chip ${escapeHtml(data.metadata_source.provider)}">${escapeHtml(data.metadata_source.provider.toUpperCase())} Metadata</span>`);
   if (data.sources.jellyfin) sourceLabels.push('<span class="source-chip jellyfin">Jellyfin</span>');
-  if (data.sources.physical_media) sourceLabels.push('<span class="source-chip physical">Physical Media</span>');
+  if (collector.media_type === "Music") sourceLabels.push(`<span class="source-chip physical">${escapeHtml(collector.format)}</span>`);
+  if (data.sources.physical_media && collector.media_type !== "Music") sourceLabels.push('<span class="source-chip physical">Physical Media</span>');
   if (data.sources.wishlist) sourceLabels.push('<span class="source-chip wishlist">Wishlist</span>');
   if (data.sources.upgrade_wanted) sourceLabels.push('<span class="source-chip upgrade">Upgrade Wanted</span>');
   $("#quickSources").innerHTML = sourceLabels.join("");
-  $("#refreshMetadata").disabled = !(data.metadata_source || data.sources.jellyfin);
-  $("#changeMetadata").disabled = collector.media_type !== "Movies";
+  $("#refreshMetadata").disabled = !(data.metadata_source || collector.media_type === "Movies");
+  $("#changeMetadata").disabled = !["Movies", "Television", "Music"].includes(collector.media_type);
   $("#removeMetadata").hidden = !data.metadata_source;
   $("#quickPoster").style.backgroundImage = metadata.poster_url ? `url("${metadata.poster_url}")` : "";
   $("#quickPoster").classList.toggle("has-image", Boolean(metadata.poster_url));
-  $("#quickBackdrop").style.backgroundImage = metadata.backdrop_url ? `linear-gradient(to bottom,rgba(10,11,14,.15),#15161a),url("${metadata.backdrop_url}")` : "";
-  $("#quickBackdrop").classList.toggle("has-image", Boolean(metadata.backdrop_url));
+  const heroImage = metadata.backdrop_url || metadata.artist_image_url || "";
+  $("#quickBackdrop").style.backgroundImage = heroImage ? `linear-gradient(to bottom,rgba(10,11,14,.15),#15161a),url("${heroImage}")` : "";
+  $("#quickBackdrop").classList.toggle("has-image", Boolean(heroImage));
   $("#quickNotes").hidden = !collector.notes;
   $("#quickNotes p").textContent = collector.notes || "";
+  const tracks = metadata.track_listing || [];
+  $("#quickTracks").hidden = !tracks.length;
+  $("#trackSummary").textContent = tracks.length ? `${tracks.length} tracks${metadata.duration_seconds ? ` · ${formatDuration(metadata.duration_seconds)}` : ""}` : "";
+  $("#trackList").innerHTML = tracks.map((track) => `<li><span>${escapeHtml(track.number || "")}</span><strong>${escapeHtml(track.title)}</strong><em>${track.duration_seconds ? formatDuration(track.duration_seconds) : ""}</em></li>`).join("");
   $("#quickView").hidden = false;
   document.body.style.overflow = "hidden";
 }
@@ -218,7 +264,14 @@ function openMetadataSearch() {
   if (!state.quickItem) return;
   $("#metadataQuery").value = state.quickItem.collector.title || "";
   $("#metadataYear").value = state.quickItem.collector.year || "";
-  $("#metadataProvider").value = state.providerPriority.split(",")[0] || "omdb";
+  const isMusic = state.quickItem.collector.media_type === "Music";
+  $("#metadataProvider").innerHTML = isMusic
+    ? state.musicProviders.map((provider) => `<option value="${provider}">${({musicbrainz:"MusicBrainz",discogs:"Discogs",lastfm:"Last.fm"})[provider]}</option>`).join("")
+    : '<option value="omdb">OMDb</option><option value="tmdb">TMDB</option>';
+  $("#metadataProvider").value = isMusic ? "musicbrainz" : (state.providerPriority.split(",")[0] || "omdb");
+  $("#metadataQuery").placeholder = isMusic ? "Album title" : "Movie title";
+  $("#metadataArtist").hidden = !isMusic;
+  $("#metadataArtist").value = state.quickItem.metadata?.artist || "";
   $("#metadataSearchButton").textContent = `Search ${$("#metadataProvider").selectedOptions[0].text}`;
   $("#metadataSearchError").textContent = "";
   $("#metadataResults").innerHTML = '<div class="empty-state"><strong>Ready to search.</strong><span>Choose the provider and correct release; MediaVault will keep collector data unchanged.</span></div>';
@@ -235,7 +288,7 @@ function renderMetadataResults(results) {
   $("#metadataResults").innerHTML = results.length ? results.map((item) => `
     <article class="metadata-result">
       <div class="result-poster">${item.poster_url ? `<img src="${escapeHtml(item.poster_url)}" alt="">` : "<span>MV</span>"}</div>
-      <div class="result-copy"><small>${escapeHtml(item.metadata_source)} · ${item.year || "Year unknown"}</small><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.overview || "No overview available.")}</p></div>
+      <div class="result-copy"><small>${escapeHtml(item.metadata_source)} · ${item.year || "Year unknown"}</small><strong>${escapeHtml(item.title)}</strong>${item.artist ? `<span class="result-artist">${escapeHtml(item.artist)}</span>` : ""}<p>${escapeHtml(item.overview || "No overview available.")}</p></div>
       <div class="result-rating">${item.rating ? `★ ${Number(item.rating).toFixed(1)}` : ""}</div>
       <button class="button secondary attach-metadata" data-provider="${escapeHtml(item.metadata_source.toLowerCase())}" data-external-id="${escapeHtml(item.external_id)}">Use this metadata</button>
     </article>`).join("") : '<div class="empty-state"><strong>No matches found.</strong><span>Try a broader title or remove the year.</span></div>';
@@ -429,6 +482,7 @@ $("#metadataSearchForm").addEventListener("submit", async (event) => {
   $("#metadataResults").innerHTML = `<div class="empty-state"><strong>Searching ${providerLabel}…</strong><span>Looking for the best matches.</span></div>`;
   const params = new URLSearchParams({ q: $("#metadataQuery").value.trim() });
   if ($("#metadataYear").value) params.set("year", $("#metadataYear").value);
+  if (!$("#metadataArtist").hidden && $("#metadataArtist").value.trim()) params.set("artist", $("#metadataArtist").value.trim());
   try { renderMetadataResults(await api(`/api/metadata/${provider}/search?${params}`)); }
   catch (error) { $("#metadataSearchError").textContent = error.message; $("#metadataResults").innerHTML = ""; }
 });
@@ -445,7 +499,9 @@ $("#providerForm").addEventListener("submit", async (event) => {
         omdb_api_key: $("#omdbKey").value.trim(),
         tmdb_api_key: $("#tmdbKey").value.trim(),
         metadata_provider_priority: $("#providerPriority").value,
+        music_provider_priority: $("#musicProviderPriority").value,
         discogs_token: $("#discogsToken").value.trim(),
+        lastfm_api_key: $("#lastfmKey").value.trim(),
         rawg_api_key: $("#rawgKey").value.trim(),
       }),
     });
@@ -480,6 +536,39 @@ $("#testTmdb").addEventListener("click", async () => {
     $("#tmdbBadge").classList.remove("connected");
     $("#providerError").textContent = error.message;
   } finally { $("#testTmdb").disabled = false; $("#testTmdb").textContent = "Test TMDB"; }
+});
+$("#refreshAllMetadata").addEventListener("click", async () => {
+  $("#bulkStatus").hidden = false;
+  $("#bulkStatusTitle").textContent = "Refresh started";
+  $("#bulkStatusNote").textContent = "Checking movie titles against configured providers…";
+  ["Processed", "Enriched", "Skipped", "Failed"].forEach((name) => $(`#bulk${name}`).textContent = "0");
+  $("#viewFailedItems").hidden = true;
+  $("#failedItems").hidden = true;
+  $("#refreshAllMetadata").disabled = true;
+  $("#refreshAllMetadata").textContent = "Refreshing…";
+  try {
+    const result = await api("/api/metadata/refresh-all", { method: "POST", body: "{}" });
+    $("#bulkProcessed").textContent = result.processed;
+    $("#bulkEnriched").textContent = result.enriched;
+    $("#bulkSkipped").textContent = result.skipped;
+    $("#bulkFailed").textContent = result.failed;
+    $("#bulkStatusTitle").textContent = "Metadata refresh complete";
+    $("#bulkStatusNote").textContent = `${result.enriched} enriched · ${result.skipped} skipped · ${result.failed} failed`;
+    const failed = result.failures.filter((item) => item.status === "failed");
+    $("#viewFailedItems").hidden = !failed.length;
+    $("#failedItems").innerHTML = failed.map((item) => `<div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.error)}</span></div>`).join("");
+    await loadDashboard();
+  } catch (error) {
+    $("#bulkStatusTitle").textContent = "Refresh failed";
+    $("#bulkStatusNote").textContent = error.message;
+  } finally {
+    $("#refreshAllMetadata").disabled = false;
+    $("#refreshAllMetadata").textContent = "Refresh All Metadata";
+  }
+});
+$("#viewFailedItems").addEventListener("click", () => {
+  $("#failedItems").hidden = !$("#failedItems").hidden;
+  $("#viewFailedItems").textContent = $("#failedItems").hidden ? "View failed items" : "Hide failed items";
 });
 $("#menuButton").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
 $("#jellyfinForm").addEventListener("submit", async (event) => {
