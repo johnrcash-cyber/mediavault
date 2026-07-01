@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0c0f">
+  <title>MediaVault — Know What You Own</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#" aria-label="MediaVault home">
+        <span class="brand-mark">MV</span>
+        <span><strong>MediaVault</strong><small>KNOW WHAT YOU OWN</small></span>
+      </a>
+      <nav>
+        <button class="nav-link active" data-view="dashboard"><span>⌂</span> Dashboard</button>
+        <button class="nav-link" data-view="collection"><span>▦</span> My Collection</button>
+        <p class="nav-label">COLLECTIONS</p>
+        <button class="nav-link type-link" data-type="Movies"><span>▰</span> Movies</button>
+        <button class="nav-link type-link" data-type="Television"><span>▣</span> Television</button>
+        <button class="nav-link type-link" data-type="Music"><span>♪</span> Music</button>
+        <button class="nav-link type-link" data-type="Games"><span>◆</span> Games</button>
+        <button class="nav-link type-link" data-type="Books"><span>▤</span> Books</button>
+        <button class="nav-link type-link" data-type="Other"><span>•••</span> Other</button>
+        <p class="nav-label">LISTS</p>
+        <button class="nav-link status-link" data-status="Wishlist"><span>♡</span> Wishlist</button>
+        <button class="nav-link status-link" data-status="Upgrade Candidate"><span>↗</span> Upgrades</button>
+        <p class="nav-label">SYSTEM</p>
+        <button class="nav-link" data-view="settings"><span>⚙</span> Settings</button>
+      </nav>
+      <div class="sidebar-foot"><span class="status-dot"></span><span><strong>Local library</strong><small>Stored securely on this device</small></span></div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <button class="icon-button menu-button" id="menuButton" aria-label="Open menu">☰</button>
+        <div class="global-search">
+          <span>⌕</span>
+          <input id="searchInput" type="search" placeholder="Search titles, UPCs, tags, locations…" autocomplete="off">
+          <kbd>/</kbd>
+        </div>
+        <button class="button primary" id="addButton"><span>＋</span> Add Media</button>
+      </header>
+
+      <div class="content">
+        <section id="dashboardView">
+          <div class="page-heading">
+            <div><p class="eyebrow">YOUR LIBRARY</p><h1>Good to see you.</h1><p>Here’s what’s on your shelves.</p></div>
+            <div class="date-chip" id="today"></div>
+          </div>
+          <div class="stat-grid">
+            <button class="stat-card" data-stat-filter=""><span class="stat-icon coral">▦</span><span><small>ALL MEDIA</small><strong id="totalCount">0</strong><em>items cataloged</em></span></button>
+            <button class="stat-card" data-stat-filter="Movies"><span class="stat-icon blue">▶</span><span><small>MOVIES</small><strong id="movieCount">0</strong><em>in your collection</em></span></button>
+            <button class="stat-card" data-stat-filter="Music"><span class="stat-icon amber">♫</span><span><small>MUSIC</small><strong id="musicCount">0</strong><em>albums & records</em></span></button>
+            <button class="stat-card" data-stat-filter="Games"><span class="stat-icon green">✦</span><span><small>GAMES</small><strong id="gameCount">0</strong><em>across all systems</em></span></button>
+            <button class="stat-card" id="wishlistCard"><span class="stat-icon violet">♡</span><span><small>WISHLIST</small><strong id="wishlistCount">0</strong><em>waiting to be found</em></span></button>
+          </div>
+          <div class="section-head"><div><h2>Recently added</h2><p>Your latest finds and additions.</p></div><button class="text-button" id="viewAll">View all <span>→</span></button></div>
+          <div id="recentGrid" class="media-grid"></div>
+          <div class="promise"><span class="promise-mark">MV</span><div><strong>Your collection. Your data.</strong><p>MediaVault keeps your catalog local, fast, and yours alone.</p></div><span class="promise-line"></span><b>KNOW WHAT YOU OWN.</b></div>
+        </section>
+
+        <section id="collectionView" hidden>
+          <div class="page-heading collection-heading">
+            <div><p class="eyebrow">CATALOG</p><h1 id="collectionTitle">My Collection</h1><p id="resultSummary">Every item you own, in one place.</p></div>
+            <div class="view-controls"><button class="icon-button active" aria-label="Grid view">▦</button></div>
+          </div>
+          <div class="filter-bar">
+            <select id="typeFilter"><option value="">All media types</option>{% for value in media_types %}<option>{{ value }}</option>{% endfor %}</select>
+            <select id="statusFilter"><option value="">All statuses</option>{% for value in statuses %}<option>{{ value }}</option>{% endfor %}</select>
+            <button class="text-button clear-filter" id="clearFilters">Clear filters</button>
+          </div>
+          <div id="collectionGrid" class="media-grid collection-grid"></div>
+        </section>
+
+        <section id="settingsView" hidden>
+          <div class="page-heading settings-heading">
+            <div><p class="eyebrow">SYSTEM</p><h1>Settings</h1><p>Connect external sources to your MediaVault catalog.</p></div>
+          </div>
+          <div class="settings-panel">
+            <div class="settings-panel-head">
+              <span class="integration-mark">J</span>
+              <div><h2>Jellyfin</h2><p>Use your Jellyfin libraries as an external catalog source.</p></div>
+              <span class="connection-badge" id="jellyfinBadge">Not tested</span>
+            </div>
+            <form id="jellyfinForm" class="settings-form">
+              <label><span>Server URL</span><input id="jellyfinUrl" type="url" required placeholder="http://192.168.1.10:8096"></label>
+              <label><span>API Key</span><input id="jellyfinKey" type="password" placeholder="Enter your Jellyfin API key"><small id="apiKeyHint">Stored locally in MediaVault.</small></label>
+              <label><span>Server Name</span><input id="jellyfinName" placeholder="Home Jellyfin"></label>
+              <p class="form-error full" id="jellyfinError"></p>
+              <div class="settings-actions full">
+                <button type="button" class="button secondary" id="testJellyfin">Test Connection</button>
+                <button type="submit" class="button primary" id="saveJellyfin">Save</button>
+                <button type="button" class="button secondary import-button" id="importJellyfin" disabled>Import Library</button>
+              </div>
+            </form>
+            <div id="connectionResult" class="connection-result" hidden>
+              <div><strong>✓ Connected</strong><span id="connectedServer"></span></div>
+              <div><small>LIBRARIES FOUND</small><div id="libraryList" class="library-list"></div></div>
+            </div>
+          </div>
+          <div id="importPreview" class="import-preview" hidden>
+            <div class="section-head"><div><h2>Import preview</h2><p>Review every Jellyfin movie before changing your catalog.</p></div><span id="previewCount" class="date-chip"></span></div>
+            <div class="preview-tabs">
+              <button class="preview-tab active" data-preview="matches">Matches <b id="matchCount">0</b></button>
+              <button class="preview-tab" data-preview="possible_matches">Possible Matches <b id="possibleCount">0</b></button>
+              <button class="preview-tab" data-preview="new_items">New Items <b id="newCount">0</b></button>
+            </div>
+            <div id="previewRows" class="preview-rows"></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-head"><div><p class="eyebrow">CATALOG ITEM</p><h2 id="modalTitle">Add to your vault</h2></div><button class="icon-button" id="closeModal" aria-label="Close">×</button></div>
+      <form id="mediaForm">
+        <input type="hidden" id="itemId">
+        <div class="form-grid">
+          <label class="full"><span>Title *</span><input name="title" required placeholder="e.g. Blade Runner"></label>
+          <label><span>Year</span><input name="year" type="number" min="1000" max="2100" placeholder="1982"></label>
+          <label><span>Media type *</span><select name="media_type">{% for value in media_types %}<option>{{ value }}</option>{% endfor %}</select></label>
+          <label><span>Format *</span><select name="format">{% for value in formats %}<option>{{ value }}</option>{% endfor %}</select></label>
+          <label><span>Status *</span><select name="status">{% for value in statuses %}<option>{{ value }}</option>{% endfor %}</select></label>
+          <label><span>UPC / Barcode</span><input name="upc" inputmode="numeric" placeholder="012345678901"></label>
+          <label><span>Condition</span><select name="condition">{% for value in conditions %}<option>{{ value }}</option>{% endfor %}</select></label>
+        </div>
+        <details>
+          <summary>Purchase details & location <span>＋</span></summary>
+          <div class="form-grid detail-fields">
+            <label><span>Purchase price</span><input name="purchase_price" type="number" min="0" step="0.01" placeholder="0.00"></label>
+            <label><span>Purchase date</span><input name="purchase_date" type="date"></label>
+            <label><span>Purchased from</span><input name="purchase_location" placeholder="Local record store"></label>
+            <label><span>Physical location</span><input name="physical_location" placeholder="Shelf A"></label>
+          </div>
+        </details>
+        <div class="form-grid">
+          <label class="full"><span>Tags</span><input name="tags" placeholder="sci-fi, favorite, criterion"></label>
+          <label class="full"><span>Notes</span><textarea name="notes" rows="3" placeholder="Edition details, lending notes, or anything useful…"></textarea></label>
+        </div>
+        <p class="form-error" id="formError"></p>
+        <div class="modal-actions"><button type="button" class="button danger" id="deleteButton" hidden>Delete</button><span></span><button type="button" class="button secondary" id="cancelButton">Cancel</button><button type="submit" class="button primary" id="saveButton">Add to collection</button></div>
+      </form>
+    </div>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
