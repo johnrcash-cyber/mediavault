@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from flask import Flask, g, jsonify, render_template, request
+from flask import Flask, Response, g, jsonify, render_template, request
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -94,6 +94,21 @@ def init_db() -> None:
             created_at TEXT NOT NULL,
             UNIQUE(server_url, jellyfin_item_id),
             FOREIGN KEY(media_id) REFERENCES media(id) ON DELETE RESTRICT
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS metadata_attachments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            media_id INTEGER NOT NULL UNIQUE,
+            provider TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            refreshed_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(media_id) REFERENCES media(id) ON DELETE CASCADE,
+            UNIQUE(provider, external_id)
         )
         """
     )
@@ -234,6 +249,197 @@ def normalized_title(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
 
 
+def normalize_jellyfin_item(raw: dict, library: dict | None = None) -> dict:
+    people = raw.get("People") or []
+    directors = [person.get("Name") for person in people if person.get("Type") == "Director"]
+    cast = [person.get("Name") for person in people if person.get("Type") == "Actor"][:12]
+    studios = raw.get("Studios") or []
+    runtime_ticks = raw.get("RunTimeTicks") or 0
+    return {
+        "jellyfin_item_id": str(raw.get("Id", "")),
+        "library_id": (library or {}).get("id", ""),
+        "library_name": (library or {}).get("name", ""),
+        "title": raw.get("Name") or "Untitled",
+        "year": raw.get("ProductionYear"),
+        "overview": raw.get("Overview") or "",
+        "genres": raw.get("Genres") or [],
+        "runtime_minutes": round(runtime_ticks / 600_000_000) if runtime_ticks else None,
+        "rating": raw.get("CommunityRating"),
+        "director": ", ".join(filter(None, directors)),
+        "cast": list(filter(None, cast)),
+        "studio": ", ".join(
+            studio.get("Name", "") for studio in studios if studio.get("Name")
+        ),
+        "release_date": (raw.get("PremiereDate") or "")[:10],
+        "provider_ids": raw.get("ProviderIds") or {},
+        "path": raw.get("Path") or "",
+        "has_poster": bool((raw.get("ImageTags") or {}).get("Primary")),
+        "has_backdrop": bool(raw.get("BackdropImageTags")),
+    }
+
+
+def provider_settings() -> dict:
+    rows = db().execute(
+        "SELECT key, value FROM app_settings WHERE key IN "
+        "('omdb_api_key', 'tmdb_api_key', 'metadata_provider_priority', "
+        "'discogs_token', 'rawg_api_key')"
+    ).fetchall()
+    values = {row["key"]: row["value"] for row in rows}
+    return {
+        "omdb_api_key": values.get("omdb_api_key", ""),
+        "tmdb_api_key": values.get("tmdb_api_key", ""),
+        "metadata_provider_priority": values.get(
+            "metadata_provider_priority", "omdb,tmdb"
+        ),
+        "discogs_token": values.get("discogs_token", ""),
+        "rawg_api_key": values.get("rawg_api_key", ""),
+    }
+
+
+def omdb_request(query: dict) -> dict:
+    api_key = provider_settings()["omdb_api_key"].strip()
+    if not api_key:
+        raise ValueError("Configure your OMDb API key in Settings first.")
+    params = {**query, "apikey": api_key, "r": "json"}
+    url = f"https://www.omdbapi.com/?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(
+        url, headers={"Accept": "application/json", "User-Agent": "MediaVault/1.0"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        if data.get("Response") == "False":
+            raise ValueError(data.get("Error") or "OMDb could not complete the request.")
+        return data
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise ValueError("OMDb rejected the API key.") from exc
+        raise ValueError(f"OMDb returned HTTP {exc.code}.") from exc
+    except urllib.error.URLError as exc:
+        raise ValueError(f"Could not reach OMDb: {getattr(exc, 'reason', exc)}") from exc
+    except (TimeoutError, json.JSONDecodeError) as exc:
+        raise ValueError("OMDb did not return a valid response.") from exc
+
+
+def normalize_omdb_movie(raw: dict) -> dict:
+    def available(value):
+        return "" if value in (None, "N/A") else value
+
+    year_text = available(raw.get("Year", ""))
+    runtime_text = available(raw.get("Runtime", ""))
+    runtime_match = re.search(r"\d+", runtime_text)
+    rating_text = available(raw.get("imdbRating", ""))
+    poster = available(raw.get("Poster", ""))
+    return {
+        "title": available(raw.get("Title")) or "Untitled",
+        "year": int(year_text[:4]) if year_text[:4].isdigit() else None,
+        "overview": available(raw.get("Plot")),
+        "genres": [
+            value.strip() for value in available(raw.get("Genre", "")).split(",")
+            if value.strip()
+        ],
+        "runtime_minutes": int(runtime_match.group()) if runtime_match else None,
+        "rating": float(rating_text) if rating_text else None,
+        "director": available(raw.get("Director")),
+        "cast": [
+            value.strip() for value in available(raw.get("Actors", "")).split(",")
+            if value.strip()
+        ],
+        "studio": "",
+        "release_date": available(raw.get("Released")),
+        "external_id": available(raw.get("imdbID")),
+        "metadata_source": "OMDb",
+        "poster_url": poster,
+        "backdrop_url": "",
+    }
+
+
+def fetch_omdb_movie(external_id: str) -> dict:
+    if not re.fullmatch(r"tt\d{7,10}", str(external_id)):
+        raise ValueError("Invalid IMDb ID.")
+    return normalize_omdb_movie(
+        omdb_request({"i": external_id, "type": "movie", "plot": "full"})
+    )
+
+
+def fetch_provider_movie(provider: str, external_id: str) -> dict:
+    if provider == "omdb":
+        return fetch_omdb_movie(external_id)
+    if provider == "tmdb":
+        return fetch_tmdb_movie(external_id)
+    raise ValueError("Unsupported movie metadata provider.")
+
+
+def tmdb_request(path: str, query: dict | None = None) -> dict:
+    api_key = provider_settings()["tmdb_api_key"].strip()
+    if not api_key:
+        raise ValueError("Configure your TMDB API key in Settings first.")
+    params = dict(query or {})
+    headers = {"Accept": "application/json", "User-Agent": "MediaVault/1.0"}
+    if api_key.startswith("eyJ"):
+        headers["Authorization"] = f"Bearer {api_key}"
+    else:
+        params["api_key"] = api_key
+    url = f"https://api.themoviedb.org/3{path}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise ValueError("TMDB rejected the API key.") from exc
+        raise ValueError(f"TMDB returned HTTP {exc.code}.") from exc
+    except urllib.error.URLError as exc:
+        raise ValueError(f"Could not reach TMDB: {getattr(exc, 'reason', exc)}") from exc
+    except (TimeoutError, json.JSONDecodeError) as exc:
+        raise ValueError("TMDB did not return a valid response.") from exc
+
+
+def normalize_tmdb_movie(raw: dict) -> dict:
+    credits = raw.get("credits") or {}
+    crew = credits.get("crew") or []
+    cast = credits.get("cast") or []
+    directors = [
+        person.get("name") for person in crew
+        if person.get("job") == "Director" and person.get("name")
+    ]
+    poster_path = raw.get("poster_path") or ""
+    backdrop_path = raw.get("backdrop_path") or ""
+    release_date = raw.get("release_date") or ""
+    return {
+        "title": raw.get("title") or raw.get("name") or "Untitled",
+        "year": int(release_date[:4]) if release_date[:4].isdigit() else None,
+        "overview": raw.get("overview") or "",
+        "genres": [
+            genre.get("name") for genre in (raw.get("genres") or [])
+            if genre.get("name")
+        ],
+        "runtime_minutes": raw.get("runtime"),
+        "rating": raw.get("vote_average"),
+        "director": ", ".join(directors),
+        "cast": [person.get("name") for person in cast[:12] if person.get("name")],
+        "studio": ", ".join(
+            company.get("name", "") for company in (raw.get("production_companies") or [])
+            if company.get("name")
+        ),
+        "release_date": release_date,
+        "external_id": str(raw.get("id", "")),
+        "metadata_source": "TMDB",
+        "poster_url": f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else "",
+        "backdrop_url": f"https://image.tmdb.org/t/p/w1280{backdrop_path}" if backdrop_path else "",
+    }
+
+
+def fetch_tmdb_movie(external_id: str) -> dict:
+    if not str(external_id).isdigit():
+        raise ValueError("Invalid TMDB movie ID.")
+    raw = tmdb_request(
+        f"/movie/{external_id}",
+        {"language": "en-US", "append_to_response": "credits"},
+    )
+    return normalize_tmdb_movie(raw)
+
+
 def compare_jellyfin_movies(items: list[dict], library: dict, server_url: str) -> dict:
     local_rows = db().execute(
         "SELECT id, title, year, format, status FROM media WHERE media_type = 'Movies'"
@@ -251,15 +457,7 @@ def compare_jellyfin_movies(items: list[dict], library: dict, server_url: str) -
         source_id = str(raw.get("Id", ""))
         if not source_id or source_id in handled:
             continue
-        source = {
-            "jellyfin_item_id": source_id,
-            "library_id": library["id"],
-            "library_name": library["name"],
-            "title": raw.get("Name") or "Untitled",
-            "year": raw.get("ProductionYear"),
-            "provider_ids": raw.get("ProviderIds") or {},
-            "path": raw.get("Path") or "",
-        }
+        source = normalize_jellyfin_item(raw, library)
         source_norm = normalized_title(source["title"])
         exact = next(
             (
@@ -337,6 +535,158 @@ def get_media(item_id: int):
     return jsonify(row_to_dict(row))
 
 
+@app.get("/api/media/<int:item_id>/quick-view")
+def media_quick_view(item_id: int):
+    row = db().execute("SELECT * FROM media WHERE id = ?", (item_id,)).fetchone()
+    if row is None:
+        return jsonify({"error": "Item not found."}), 404
+    collector = row_to_dict(row)
+    source = db().execute(
+        """
+        SELECT * FROM jellyfin_sources
+        WHERE media_id = ? AND action IN ('attached', 'created')
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        (item_id,),
+    ).fetchone()
+    metadata_attachment = db().execute(
+        "SELECT * FROM metadata_attachments WHERE media_id = ?",
+        (item_id,),
+    ).fetchone()
+    metadata = {}
+    metadata_source = None
+    if metadata_attachment:
+        metadata = json.loads(metadata_attachment["metadata_json"] or "{}")
+        metadata["metadata_source"] = metadata_attachment["provider"].upper()
+        metadata["external_id"] = metadata_attachment["external_id"]
+        metadata["refreshed_at"] = metadata_attachment["refreshed_at"]
+        metadata_source = {
+            "provider": metadata_attachment["provider"],
+            "external_id": metadata_attachment["external_id"],
+            "refreshed_at": metadata_attachment["refreshed_at"],
+        }
+    jellyfin_source = None
+    if source:
+        if not metadata_attachment:
+            metadata = json.loads(source["metadata_json"] or "{}")
+            metadata["metadata_source"] = "Jellyfin"
+        jellyfin_source = {
+            "id": source["id"],
+            "item_id": source["jellyfin_item_id"],
+            "library_name": source["jellyfin_library_name"],
+            "server_url": source["server_url"],
+            "action": source["action"],
+        }
+        if not metadata_attachment and metadata.get("has_poster"):
+            metadata["poster_url"] = f"/api/jellyfin/image/{source['jellyfin_item_id']}/Primary"
+        if not metadata_attachment and metadata.get("has_backdrop"):
+            metadata["backdrop_url"] = f"/api/jellyfin/image/{source['jellyfin_item_id']}/Backdrop"
+    return jsonify({
+        "collector": collector,
+        "metadata": metadata,
+        "metadata_source": metadata_source,
+        "jellyfin_source": jellyfin_source,
+        "sources": {
+            "jellyfin": bool(source),
+            "physical_media": collector["format"] != "Digital",
+            "wishlist": collector["status"] == "Wishlist",
+            "upgrade_wanted": collector["status"] == "Upgrade Candidate",
+        },
+    })
+
+
+@app.post("/api/media/<int:item_id>/refresh-metadata")
+def refresh_media_metadata(item_id: int):
+    attachment = db().execute(
+        "SELECT * FROM metadata_attachments WHERE media_id = ?", (item_id,)
+    ).fetchone()
+    if attachment:
+        try:
+            metadata = fetch_provider_movie(
+                attachment["provider"], attachment["external_id"]
+            )
+            db().execute(
+                """
+                UPDATE metadata_attachments
+                SET metadata_json = ?, refreshed_at = ?
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(metadata, separators=(",", ":")),
+                    datetime.now(timezone.utc).isoformat(),
+                    attachment["id"],
+                ),
+            )
+            db().commit()
+            return media_quick_view(item_id)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+    source = db().execute(
+        """
+        SELECT * FROM jellyfin_sources
+        WHERE media_id = ? AND action IN ('attached', 'created')
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        (item_id,),
+    ).fetchone()
+    if source is None:
+        return jsonify({"error": "This item has no Jellyfin source to refresh."}), 400
+    settings = jellyfin_settings()
+    try:
+        raw = jellyfin_request(
+            settings,
+            f"/Items/{urllib.parse.quote(source['jellyfin_item_id'])}",
+            {"Fields": "Overview,Genres,RunTimeTicks,CommunityRating,People,Studios,"
+                       "PremiereDate,ProviderIds,Path,ImageTags,BackdropImageTags"},
+        )
+        metadata = normalize_jellyfin_item(
+            raw,
+            {"id": source["jellyfin_library_id"], "name": source["jellyfin_library_name"]},
+        )
+        db().execute(
+            """
+            UPDATE jellyfin_sources
+            SET source_title = ?, source_year = ?, metadata_json = ?
+            WHERE id = ?
+            """,
+            (
+                metadata["title"], metadata["year"],
+                json.dumps(metadata, separators=(",", ":")), source["id"],
+            ),
+        )
+        db().commit()
+        return media_quick_view(item_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/jellyfin/image/<item_id>/<image_type>")
+def jellyfin_image(item_id: str, image_type: str):
+    if image_type not in ("Primary", "Backdrop"):
+        return jsonify({"error": "Invalid image type."}), 400
+    settings = jellyfin_settings()
+    try:
+        server_url = normalize_server_url(settings["server_url"])
+        if not settings["api_key"]:
+            raise ValueError("Jellyfin API key is not configured.")
+        url = (
+            f"{server_url}/Items/{urllib.parse.quote(item_id)}/Images/{image_type}"
+            f"?maxWidth={'1280' if image_type == 'Backdrop' else '500'}&quality=90"
+        )
+        req = urllib.request.Request(
+            url,
+            headers={"X-Emby-Token": settings["api_key"], "User-Agent": "MediaVault/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return Response(
+                response.read(),
+                content_type=response.headers.get_content_type(),
+                headers={"Cache-Control": "private, max-age=3600"},
+            )
+    except (ValueError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+        return jsonify({"error": f"Could not load Jellyfin image: {exc}"}), 404
+
+
 @app.post("/api/media")
 def create_media():
     try:
@@ -358,12 +708,19 @@ def create_media():
 
 @app.put("/api/media/<int:item_id>")
 def update_media(item_id: int):
-    if db().execute("SELECT 1 FROM media WHERE id = ?", (item_id,)).fetchone() is None:
+    existing = db().execute(
+        "SELECT title, year FROM media WHERE id = ?", (item_id,)
+    ).fetchone()
+    if existing is None:
         return jsonify({"error": "Item not found."}), 404
     try:
         item = clean_payload(request.get_json(silent=True) or {})
     except (ValueError, TypeError) as exc:
         return jsonify({"error": str(exc)}), 400
+    # Identity fields are fixed after creation. Attached providers own display
+    # metadata; collector edits must never rewrite title/year implicitly.
+    item["title"] = existing["title"]
+    item["year"] = existing["year"]
     assignments = ", ".join(f"{column} = ?" for column in item)
     now = datetime.now(timezone.utc).isoformat()
     db().execute(
@@ -417,6 +774,180 @@ def get_jellyfin_settings():
         "api_key": "",
         "has_api_key": bool(settings["api_key"]),
     })
+
+
+@app.get("/api/settings/providers")
+def get_provider_settings():
+    settings = provider_settings()
+    return jsonify({
+        "omdb_api_key": "",
+        "has_omdb_api_key": bool(settings["omdb_api_key"]),
+        "tmdb_api_key": "",
+        "has_tmdb_api_key": bool(settings["tmdb_api_key"]),
+        "metadata_provider_priority": settings["metadata_provider_priority"],
+        "discogs_token": "",
+        "has_discogs_token": bool(settings["discogs_token"]),
+        "rawg_api_key": "",
+        "has_rawg_api_key": bool(settings["rawg_api_key"]),
+    })
+
+
+@app.post("/api/settings/providers")
+def save_provider_settings():
+    payload = request.get_json(silent=True) or {}
+    current = provider_settings()
+    values = {
+        "omdb_api_key": str(payload.get("omdb_api_key", "")).strip() or current["omdb_api_key"],
+        "tmdb_api_key": str(payload.get("tmdb_api_key", "")).strip() or current["tmdb_api_key"],
+        "metadata_provider_priority": (
+            str(payload.get("metadata_provider_priority", "")).strip()
+            if str(payload.get("metadata_provider_priority", "")).strip()
+            in ("omdb,tmdb", "tmdb,omdb")
+            else current["metadata_provider_priority"]
+        ),
+        "discogs_token": str(payload.get("discogs_token", "")).strip() or current["discogs_token"],
+        "rawg_api_key": str(payload.get("rawg_api_key", "")).strip() or current["rawg_api_key"],
+    }
+    db().executemany(
+        "INSERT INTO app_settings(key, value) VALUES(?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        values.items(),
+    )
+    db().commit()
+    return jsonify({"saved": True})
+
+
+@app.post("/api/metadata/omdb/test")
+def test_omdb_connection():
+    try:
+        data = omdb_request({"i": "tt0133093", "type": "movie", "plot": "short"})
+        return jsonify({"connected": data.get("Response") != "False", "provider": "OMDb"})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/metadata/tmdb/test")
+def test_tmdb_connection():
+    try:
+        data = tmdb_request("/configuration")
+        return jsonify({"connected": bool(data.get("images"))})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/metadata/tmdb/search")
+def search_tmdb_movies():
+    query = request.args.get("q", "").strip()
+    year = request.args.get("year", "").strip()
+    if not query:
+        return jsonify({"error": "Enter a movie title to search."}), 400
+    params = {
+        "query": query,
+        "include_adult": "false",
+        "language": "en-US",
+        "page": 1,
+    }
+    if year.isdigit():
+        params["primary_release_year"] = year
+    try:
+        response = tmdb_request("/search/movie", params)
+        results = []
+        for raw in response.get("results", [])[:12]:
+            poster_path = raw.get("poster_path") or ""
+            release_date = raw.get("release_date") or ""
+            results.append({
+                "external_id": str(raw.get("id", "")),
+                "title": raw.get("title") or "Untitled",
+                "year": int(release_date[:4]) if release_date[:4].isdigit() else None,
+                "overview": raw.get("overview") or "",
+                "rating": raw.get("vote_average"),
+                "poster_url": f"https://image.tmdb.org/t/p/w185{poster_path}" if poster_path else "",
+                "metadata_source": "TMDB",
+            })
+        return jsonify(results)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.get("/api/metadata/omdb/search")
+def search_omdb_movies():
+    query = request.args.get("q", "").strip()
+    year = request.args.get("year", "").strip()
+    if not query:
+        return jsonify({"error": "Enter a movie title to search."}), 400
+    params = {"s": query, "type": "movie", "page": 1}
+    if year.isdigit():
+        params["y"] = year
+    try:
+        response = omdb_request(params)
+        results = []
+        for raw in response.get("Search", [])[:12]:
+            poster = raw.get("Poster") or ""
+            if poster == "N/A":
+                poster = ""
+            year_text = raw.get("Year") or ""
+            results.append({
+                "external_id": str(raw.get("imdbID", "")),
+                "title": raw.get("Title") or "Untitled",
+                "year": int(year_text[:4]) if year_text[:4].isdigit() else None,
+                "overview": "Select this result to retrieve the full OMDb record.",
+                "rating": None,
+                "poster_url": poster,
+                "metadata_source": "OMDb",
+            })
+        return jsonify(results)
+    except ValueError as exc:
+        if "Movie not found" in str(exc):
+            return jsonify([])
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/media/<int:item_id>/metadata")
+def attach_media_metadata(item_id: int):
+    if db().execute("SELECT 1 FROM media WHERE id = ?", (item_id,)).fetchone() is None:
+        return jsonify({"error": "Item not found."}), 404
+    payload = request.get_json(silent=True) or {}
+    provider = str(payload.get("provider", "")).casefold()
+    external_id = str(payload.get("external_id", "")).strip()
+    if provider not in ("omdb", "tmdb"):
+        return jsonify({"error": "Choose OMDb or TMDB for movie metadata."}), 400
+    try:
+        metadata = fetch_provider_movie(provider, external_id)
+        now = datetime.now(timezone.utc).isoformat()
+        db().execute(
+            """
+            INSERT INTO metadata_attachments (
+                media_id, provider, external_id, metadata_json, refreshed_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(media_id) DO UPDATE SET
+                provider = excluded.provider,
+                external_id = excluded.external_id,
+                metadata_json = excluded.metadata_json,
+                refreshed_at = excluded.refreshed_at
+            """,
+            (
+                item_id, provider, external_id,
+                json.dumps(metadata, separators=(",", ":")), now, now,
+            ),
+        )
+        db().commit()
+        return media_quick_view(item_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except sqlite3.IntegrityError:
+        db().rollback()
+        return jsonify({"error": "That TMDB movie is already attached to another catalog item."}), 409
+
+
+@app.delete("/api/media/<int:item_id>/metadata")
+def remove_media_metadata(item_id: int):
+    cursor = db().execute(
+        "DELETE FROM metadata_attachments WHERE media_id = ?", (item_id,)
+    )
+    db().commit()
+    if cursor.rowcount == 0:
+        return jsonify({"error": "This item has no metadata source."}), 404
+    return jsonify({"removed": True})
 
 
 @app.post("/api/settings/jellyfin")
@@ -475,7 +1006,9 @@ def jellyfin_import_preview():
                     "ParentId": library["id"],
                     "IncludeItemTypes": "Movie",
                     "Recursive": "true",
-                    "Fields": "ProviderIds,Path",
+                    "Fields": "Overview,Genres,RunTimeTicks,CommunityRating,People,"
+                              "Studios,PremiereDate,ProviderIds,Path,ImageTags,"
+                              "BackdropImageTags",
                 },
             )
             comparison = compare_jellyfin_movies(

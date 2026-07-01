@@ -82,6 +82,26 @@
           <div class="page-heading settings-heading">
             <div><p class="eyebrow">SYSTEM</p><h1>Settings</h1><p>Connect external sources to your MediaVault catalog.</p></div>
           </div>
+          <div class="settings-panel provider-panel">
+            <div class="settings-panel-head">
+              <span class="integration-mark tmdb-mark">TM</span>
+              <div><h2>Metadata Providers</h2><p>Configure enrichment services. Credentials stay on this server.</p></div>
+              <span class="connection-badge" id="tmdbBadge">Not tested</span>
+            </div>
+            <form id="providerForm" class="settings-form">
+              <label><span>OMDb API Key</span><input id="omdbKey" type="password" placeholder="Enter your OMDb API key"><small id="omdbKeyHint">Primary movie metadata provider.</small><a class="provider-help" href="https://www.omdbapi.com/apikey.aspx" target="_blank" rel="noopener noreferrer">Get a free OMDb API key ↗</a></label>
+              <label><span>TMDB API Key or Read Access Token</span><input id="tmdbKey" type="password" placeholder="Enter your TMDB credential"><small id="tmdbKeyHint">Optional movie and television provider.</small><a class="provider-help" href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener noreferrer">TMDB API account settings ↗</a><a class="provider-help subtle" href="https://developer.themoviedb.org/docs/authentication-application" target="_blank" rel="noopener noreferrer">Authentication documentation ↗</a></label>
+              <label class="full"><span>Movie / TV Provider Priority</span><select id="providerPriority"><option value="omdb,tmdb">1. OMDb  →  2. TMDB</option><option value="tmdb,omdb">1. TMDB  →  2. OMDb</option></select><small>The first configured provider is selected by default when searching.</small></label>
+              <label><span>Discogs Token</span><input id="discogsToken" type="password" placeholder="Coming next"><small>Reserved for Music enrichment.</small></label>
+              <label><span>RAWG API Key</span><input id="rawgKey" type="password" placeholder="Optional"><small>Reserved for Games enrichment.</small></label>
+              <p class="form-error full" id="providerError"></p>
+              <div class="settings-actions full">
+                <button type="button" class="button secondary" id="testOmdb">Test OMDb</button>
+                <button type="button" class="button secondary" id="testTmdb">Test TMDB</button>
+                <button type="submit" class="button primary">Save Providers</button>
+              </div>
+            </form>
+          </div>
           <div class="settings-panel">
             <div class="settings-panel-head">
               <span class="integration-mark">J</span>
@@ -116,6 +136,58 @@
         </section>
       </div>
     </main>
+  </div>
+
+  <div class="modal-backdrop" id="quickView" hidden>
+    <div class="quick-view" role="dialog" aria-modal="true" aria-labelledby="quickTitle">
+      <div class="quick-backdrop" id="quickBackdrop">
+        <button class="icon-button quick-close" id="closeQuickView" aria-label="Close">×</button>
+      </div>
+      <div class="quick-content">
+        <div class="quick-poster" id="quickPoster"><span>MV</span></div>
+        <div class="quick-main">
+          <div class="quick-title-row">
+            <div><p class="eyebrow" id="quickType">CATALOG ITEM</p><h2 id="quickTitle"></h2><p class="quick-subtitle" id="quickSubtitle"></p></div>
+            <div class="quick-actions">
+              <button class="button secondary" id="editQuickView">Edit Collector Info</button>
+              <button class="button secondary" id="refreshMetadata">Refresh Metadata</button>
+              <button class="button secondary" id="changeMetadata">Change Metadata Source</button>
+              <button class="text-button remove-source" id="removeMetadata">Remove Metadata Source</button>
+              <button class="button primary" id="closeQuickButton">Close</button>
+            </div>
+          </div>
+          <div class="source-chips" id="quickSources"></div>
+          <p class="quick-overview" id="quickOverview"></p>
+          <div class="metadata-grid" id="metadataGrid"></div>
+          <div class="collector-section">
+            <div class="section-head"><div><h3>Ownership & collection</h3><p>Managed by MediaVault</p></div></div>
+            <div class="collector-grid" id="collectorGrid"></div>
+          </div>
+          <div class="notes-section" id="quickNotes" hidden><small>NOTES</small><p></p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="metadataSearchModal" hidden>
+    <div class="modal metadata-search-modal" role="dialog" aria-modal="true" aria-labelledby="metadataSearchTitle">
+      <div class="modal-head">
+        <div><p class="eyebrow">METADATA SOURCE</p><h2 id="metadataSearchTitle">Find movie metadata</h2></div>
+        <button class="icon-button" id="closeMetadataSearch" aria-label="Close">×</button>
+      </div>
+      <form id="metadataSearchForm" class="metadata-search-form">
+        <div class="search-fields">
+          <select id="metadataProvider"><option value="omdb">OMDb</option><option value="tmdb">TMDB</option></select>
+          <input id="metadataQuery" required placeholder="Movie title">
+          <input id="metadataYear" type="number" min="1880" max="2100" placeholder="Year">
+          <button class="button primary" type="submit" id="metadataSearchButton">Search OMDb</button>
+        </div>
+        <p class="form-error" id="metadataSearchError"></p>
+      </form>
+      <div id="metadataResults" class="metadata-results">
+        <div class="empty-state"><strong>Search TMDB</strong><span>Select the correct movie to attach read-only metadata.</span></div>
+      </div>
+    </div>
   </div>
 
   <div class="modal-backdrop" id="modal" hidden>
