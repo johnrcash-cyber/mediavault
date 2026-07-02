@@ -96,7 +96,7 @@ async function loadSources() {
   try {
     const data = await api("/api/sources");
     $("#localSourceCount").textContent = data.local.items;
-    renderExternalSourceCards(data.instances || []);
+    renderSourceAccordions(data.instances || []);
   } catch (error) { toast(error.message); }
 }
 
@@ -125,6 +125,78 @@ function renderExternalSourceCards(instances) {
       </div>
     </article>`;
   }).join("");
+}
+
+function renderSourceAccordions(instances) {
+  if (!instances.length) {
+    $("#externalSourceCards").innerHTML = `<div class="sources-empty-state"><strong>No external sources connected.</strong><span>Connect Jellyfin or add an import source when you are ready.</span><button class="button primary" data-source-action="add">＋ Add Source</button></div>`;
+    return;
+  }
+  $("#externalSourceCards").innerHTML = instances.map((source) => {
+    const jellyfin = source.type === "jellyfin";
+    const details = source.details || {};
+    const lastActivity = jellyfin ? details.last_sync : details.last_import;
+    return `<article class="source-model-card source-accordion external-instance" data-source-type="${escapeHtml(source.type)}" data-source-id="${escapeHtml(source.id)}">
+      <div class="source-accordion-summary" data-source-action="toggle" role="button" tabindex="0" aria-expanded="false">
+        <span class="source-card-icon ${jellyfin ? "jellyfin" : "import"}">${jellyfin ? "J" : "⇩"}</span>
+        <div class="source-summary-name"><h3>${escapeHtml(source.name)}</h3><small>${escapeHtml(source.type_label)}</small></div>
+        <span class="source-state ${source.status.toLowerCase().replaceAll(" ", "-")}">${escapeHtml(source.status)}</span>
+        <span class="source-summary-stat"><small>LAST SYNC</small><strong>${lastActivity ? new Date(lastActivity).toLocaleString() : "Never"}</strong></span>
+        <span class="source-summary-stat"><small>ITEMS</small><strong>${details.items || 0}</strong></span>
+        ${jellyfin ? '<button class="button primary compact-sync" data-source-action="sync">Sync</button>' : '<button class="button secondary compact-sync" data-source-action="view">View</button>'}
+        <span class="accordion-chevron">⌄</span>
+      </div>
+      <div class="source-accordion-panel" hidden>${jellyfin ? jellyfinConfigurationMarkup(source) : '<p class="source-panel-note">This imported source has no connection settings.</p><div class="source-panel-actions"><button class="text-button danger-text" data-source-action="delete">Delete</button></div>'}</div>
+    </article>`;
+  }).join("");
+}
+
+function jellyfinConfigurationMarkup(source = {}) {
+  const details = source.details || {};
+  const frequencies = [["manual","Manual only"],["startup","On startup"],["hourly","Every 1 hour"],["six_hours","Every 6 hours"],["daily","Daily"],["weekly","Weekly"]];
+  return `<div class="source-config-grid">
+    <label class="wide">Server URL<input class="jf-source-url" type="url" value="${escapeHtml(details.server_url || "")}" placeholder="https://192.168.1.10:8096"></label>
+    <label>API Key<input class="jf-source-key" type="password" placeholder="${details.server_url ? "Saved — leave blank to keep" : "Enter API key"}" autocomplete="new-password"></label>
+    <label>Server Name<input class="jf-source-name" value="${escapeHtml(source.name === "New Jellyfin Source" ? "" : source.name || "")}" placeholder="Home Jellyfin"></label>
+  </div>
+  <div class="source-config-section"><div class="source-config-heading"><div><strong>Enabled libraries</strong><small>Choose which libraries feed MediaVault.</small></div><button class="text-button" data-source-action="refresh-libraries">Refresh Libraries</button></div><div class="source-library-list"><span class="source-panel-note">Refresh to discover libraries.</span></div></div>
+  <div class="source-automation-row"><label class="toggle-label"><input type="checkbox" class="jf-source-auto" ${details.auto_sync ? "checked" : ""}> Automation enabled</label><label>Sync frequency<select class="jf-source-frequency">${frequencies.map(([value,label]) => `<option value="${value}" ${details.frequency === value ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>
+  <p class="form-error source-config-error"></p>
+  <div class="source-panel-actions"><button class="button secondary" data-source-action="test">Test Connection</button><button class="button primary" data-source-action="save">Save</button><button class="button secondary" data-source-action="sync">Sync Now</button><button class="text-button" data-source-action="disable">Disable</button><button class="text-button danger-text" data-source-action="delete">Delete</button></div>`;
+}
+
+function renderSourceLibraries(card, libraries) {
+  const categories = ["Movies", "Television", "Music", "Books", "Games", "Other"];
+  card.querySelector(".source-library-list").innerHTML = libraries.length ? libraries.map((library) => `<div class="source-library-row" data-library-id="${escapeHtml(library.library_id)}"><label><input type="checkbox" class="jf-library-enabled" ${library.enabled ? "checked" : ""} ${library.supported ? "" : "disabled"}> ${escapeHtml(library.name)}</label>${library.supported ? `<select class="jf-library-category">${categories.map((category) => `<option value="${category}" ${library.media_category === category ? "selected" : ""}>${category}</option>`).join("")}</select>` : "<small>Not mapped</small>"}<small>${library.imported_count || 0} imported</small></div>`).join("") : '<span class="source-panel-note">No libraries discovered yet.</span>';
+}
+
+async function loadSourceAccordion(card) {
+  if (card.dataset.sourceType !== "jellyfin" || card.dataset.loaded === "true" || card.dataset.sourceId === "new") return;
+  const data = await api("/api/jellyfin/libraries");
+  renderSourceLibraries(card, data.libraries || []);
+  card.querySelector(".jf-source-auto").checked = Boolean(data.auto_sync);
+  card.querySelector(".jf-source-frequency").value = data.frequency || "manual";
+  card.dataset.loaded = "true";
+}
+
+function sourceJellyfinPayload(card) {
+  return { server_url: card.querySelector(".jf-source-url").value.trim(), api_key: card.querySelector(".jf-source-key").value.trim(), server_name: card.querySelector(".jf-source-name").value.trim() };
+}
+
+async function saveSourceLibraries(card) {
+  const libraries = Array.from(card.querySelectorAll(".source-library-row")).map((row) => ({ library_id: row.dataset.libraryId, enabled: row.querySelector(".jf-library-enabled")?.checked || false, media_category: row.querySelector(".jf-library-category")?.value || null }));
+  await api("/api/jellyfin/libraries", { method: "PUT", body: JSON.stringify({ libraries, auto_sync: card.querySelector(".jf-source-auto").checked, frequency: card.querySelector(".jf-source-frequency").value }) });
+}
+
+function openNewJellyfinSource() {
+  $("#externalSourceCards").innerHTML = `<article class="source-model-card source-accordion external-instance expanded" data-source-type="jellyfin" data-source-id="new">
+    <div class="source-accordion-summary" data-source-action="toggle" role="button" tabindex="0" aria-expanded="true">
+      <span class="source-card-icon jellyfin">J</span><div class="source-summary-name"><h3>New Jellyfin Source</h3><small>Jellyfin</small></div>
+      <span class="source-state">Setup</span><span class="source-summary-stat"><small>LAST SYNC</small><strong>Never</strong></span><span class="source-summary-stat"><small>ITEMS</small><strong>0</strong></span><button class="button primary compact-sync" data-source-action="save">Save</button><span class="accordion-chevron">⌄</span>
+    </div>
+    <div class="source-accordion-panel">${jellyfinConfigurationMarkup({ name: "New Jellyfin Source", details: {} })}</div>
+  </article>`;
+  $("#externalSourceCards .jf-source-url")?.focus();
 }
 
 async function loadSourceStatus() {
@@ -541,11 +613,48 @@ document.addEventListener("click", async (event) => {
     if (!sourceCard) return;
     const sourceType = sourceCard.dataset.sourceType;
     const sourceId = sourceCard.dataset.sourceId;
-    if (action === "configure") {
-      toast("Jellyfin configuration will open in a source setup screen.");
+    const errorBox = sourceCard.querySelector(".source-config-error");
+    if (action === "toggle" || action === "configure") {
+      const panel = sourceCard.querySelector(".source-accordion-panel");
+      const opening = panel.hidden;
+      panel.hidden = !opening;
+      sourceCard.classList.toggle("expanded", opening);
+      sourceCard.querySelector(".source-accordion-summary")?.setAttribute("aria-expanded", String(opening));
+      if (opening) loadSourceAccordion(sourceCard).catch((error) => { if (errorBox) errorBox.textContent = error.message; });
     } else if (action === "sync") {
+      if (sourceId === "new") { toast("Save the Jellyfin connection before syncing."); return; }
       $("#refreshLibraryAction").click();
+    } else if (action === "test") {
+      if (errorBox) errorBox.textContent = "";
+      sourceInstanceAction.disabled = true;
+      try {
+        const result = await api("/api/jellyfin/test", { method: "POST", body: JSON.stringify(sourceJellyfinPayload(sourceCard)) });
+        toast(`Connected${result.server_name ? ` to ${result.server_name}` : ""}.`);
+      } catch (error) { if (errorBox) errorBox.textContent = error.message; }
+      finally { sourceInstanceAction.disabled = false; }
+    } else if (action === "refresh-libraries") {
+      if (sourceId === "new") { if (errorBox) errorBox.textContent = "Save the connection before refreshing libraries."; return; }
+      sourceInstanceAction.disabled = true;
+      try {
+        const data = await api("/api/jellyfin/libraries/refresh", { method: "POST", body: "{}" });
+        renderSourceLibraries(sourceCard, data.libraries || []);
+        sourceCard.dataset.loaded = "true";
+        toast(`${(data.libraries || []).length} libraries found.`);
+      } catch (error) { if (errorBox) errorBox.textContent = error.message; }
+      finally { sourceInstanceAction.disabled = false; }
+    } else if (action === "save") {
+      if (errorBox) errorBox.textContent = "";
+      sourceInstanceAction.disabled = true;
+      try {
+        await api("/api/settings/jellyfin", { method: "POST", body: JSON.stringify(sourceJellyfinPayload(sourceCard)) });
+        await api("/api/sources/jellyfin/enable", { method: "POST", body: "{}" });
+        if (sourceId !== "new") await saveSourceLibraries(sourceCard);
+        toast("Jellyfin source saved.");
+        await loadSources();
+      } catch (error) { if (errorBox) errorBox.textContent = error.message; }
+      finally { sourceInstanceAction.disabled = false; }
     } else if (action === "disable") {
+      if (sourceId === "new") { sourceCard.remove(); return; }
       try {
         await api("/api/sources/jellyfin/disable", { method: "POST", body: "{}" });
         toast("Jellyfin source disabled.");
@@ -554,6 +663,7 @@ document.addEventListener("click", async (event) => {
     } else if (action === "view") {
       setView("collection", { type: "", status: "", origin: "" });
     } else if (action === "delete") {
+      if (sourceId === "new") { sourceCard.remove(); return; }
       if (!confirm("Delete this source connection? MediaVault catalog records will be kept.")) return;
       try {
         await api(`/api/sources/${sourceType}/${sourceId}`, { method: "DELETE" });
@@ -854,9 +964,7 @@ $$("[data-source-choice]").forEach((button) => button.addEventListener("click", 
   $("#addSourceModal").hidden = true;
   document.body.style.overflow = "";
   if (button.dataset.sourceChoice === "jellyfin") {
-    api("/api/sources/jellyfin/enable", { method: "POST", body: "{}" })
-      .then(() => { toast("Jellyfin source enabled."); loadSources(); })
-      .catch((error) => toast(error.message, 5000));
+    openNewJellyfinSource();
   }
   if (button.dataset.sourceChoice === "json") openCatalogFilePicker();
   if (!["jellyfin", "json"].includes(button.dataset.sourceChoice)) {

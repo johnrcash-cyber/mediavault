@@ -1907,8 +1907,10 @@ def source_summary():
             "details": {
                 "server_url": jellyfin["server_url"],
                 "libraries": libraries["enabled"] or 0,
+                "items": jellyfin_count,
                 "last_sync": last_sync,
                 "frequency": auto_sync_frequency(),
+                "auto_sync": auto_sync_enabled(),
             },
         })
     import_instances = connection.execute(
