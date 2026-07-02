@@ -1,6 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => document.querySelectorAll(selector);
-const state = { query: "", type: "", status: "", view: "dashboard", items: [], jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviders: ["musicbrainz"] };
+const state = { query: "", type: "", status: "", view: "dashboard", items: [], jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviders: ["musicbrainz"], settingsTab: "metadata" };
 const typeIcons = { Movies: "▶", Television: "TV", Music: "♫", Games: "✦", Books: "B", Other: "MV" };
 
 async function api(url, options = {}) {
@@ -84,7 +84,22 @@ function setView(view, filters = {}) {
   $("#statusFilter").value = state.status;
   $(".sidebar").classList.remove("open");
   if (view === "collection") loadCollection();
-  if (view === "settings") Promise.all([loadJellyfinSettings(), loadProviderSettings()]);
+  if (view === "settings") {
+    setSettingsTab(state.settingsTab);
+    Promise.all([loadJellyfinSettings(), loadProviderSettings()]);
+  }
+}
+
+function setSettingsTab(tab) {
+  state.settingsTab = tab;
+  $$(".settings-tab").forEach((button) =>
+    button.classList.toggle("active", button.dataset.settingsTab === tab)
+  );
+  $$("[data-settings-section]").forEach((section) => {
+    section.hidden = section.id === "importPreview"
+      ? tab !== "jellyfin" || !state.jellyfinPreview
+      : section.dataset.settingsSection !== tab;
+  });
 }
 
 async function loadProviderSettings() {
@@ -120,7 +135,54 @@ async function loadJellyfinSettings() {
     $("#jellyfinKey").placeholder = data.has_api_key ? "API key saved — leave blank to keep it" : "Enter your Jellyfin API key";
     $("#apiKeyHint").textContent = data.has_api_key ? "An API key is stored locally. Enter a new one to replace it." : "Stored locally in MediaVault.";
     $("#importJellyfin").disabled = !(data.server_url && data.has_api_key);
+    if (data.server_url && data.has_api_key) await loadJellyfinLibraries();
   } catch (error) { $("#jellyfinError").textContent = error.message; }
+}
+
+async function loadJellyfinLibraries() {
+  try {
+    const data = await api("/api/jellyfin/libraries");
+    $("#jellyfinAutoSync").checked = Boolean(data.auto_sync);
+    renderJellyfinLibraries(data.libraries || []);
+    $("#jellyfinLastSync").textContent = `Last sync: ${data.last_sync ? new Date(data.last_sync).toLocaleString() : "Never"}`;
+  } catch (error) { $("#jellyfinError").textContent = error.message; }
+}
+
+function renderJellyfinLibraries(libraries) {
+  const categories = ["Movies", "Television", "Music", "Books", "Games", "Other"];
+  $("#jellyfinLibraryRows").innerHTML = libraries.length ? libraries.map((library) => {
+    const options = categories.map((category) =>
+      `<option value="${category}" ${library.media_category === category ? "selected" : ""}>${category}</option>`
+    ).join("");
+    return `<div class="jellyfin-library-row" data-library-id="${escapeHtml(library.library_id)}">
+      <label class="library-enable"><input type="checkbox" class="jf-library-enabled" ${library.enabled ? "checked" : ""} ${library.supported ? "" : "disabled"}><span></span></label>
+      <div class="library-identity"><strong>${escapeHtml(library.name)}</strong><small>${escapeHtml(library.collection_type || "mixed")}</small></div>
+      <span class="library-arrow">→</span>
+      ${library.supported ? `<select class="jf-library-category">${options}</select>` : '<span class="unsupported-library">Not mapped</span>'}
+      <div class="library-sync-count"><strong>${library.imported_count || 0}</strong><small>imported</small></div>
+    </div>`;
+  }).join("") : '<div class="library-empty">No libraries discovered yet.</div>';
+}
+
+async function saveJellyfinLibraryConfig() {
+  const selections = Array.from($$(".jellyfin-library-row")).map((row) => ({
+    library_id: row.dataset.libraryId,
+    enabled: row.querySelector(".jf-library-enabled")?.checked || false,
+    media_category: row.querySelector(".jf-library-category")?.value || null,
+  }));
+  await api("/api/jellyfin/libraries", {
+    method: "PUT",
+    body: JSON.stringify({ libraries: selections, auto_sync: $("#jellyfinAutoSync").checked }),
+  });
+}
+
+function renderJellyfinSyncStatus(result) {
+  const libraryLines = (result.libraries || []).map((library) =>
+    `<div><strong>${escapeHtml(library.name)}</strong><span>${library.imported_count || 0} imported${library.failed ? ` · ${library.failed} failed` : ""}</span></div>`
+  ).join("");
+  $("#jellyfinSyncStatus").innerHTML = `<p><strong>Sync complete</strong><span>${result.created} created · ${result.attached} attached · ${result.failed} failed</span></p>${libraryLines}`;
+  $("#jellyfinSyncStatus").hidden = false;
+  $("#jellyfinLastSync").textContent = `Last sync: ${new Date(result.last_sync).toLocaleString()}`;
 }
 
 function jellyfinFormData() {
@@ -242,7 +304,9 @@ async function openQuickView(itemId) {
   if (data.sources.wishlist) sourceLabels.push('<span class="source-chip wishlist">Wishlist</span>');
   if (data.sources.upgrade_wanted) sourceLabels.push('<span class="source-chip upgrade">Upgrade Wanted</span>');
   $("#quickSources").innerHTML = sourceLabels.join("");
-  $("#refreshMetadata").disabled = !(data.metadata_source || collector.media_type === "Movies");
+  $("#refreshMetadata").disabled = !(
+    data.metadata_source || ["Movies", "Music"].includes(collector.media_type)
+  );
   $("#changeMetadata").disabled = !["Movies", "Television", "Music"].includes(collector.media_type);
   $("#removeMetadata").hidden = !data.metadata_source;
   $("#quickPoster").style.backgroundImage = metadata.poster_url ? `url("${metadata.poster_url}")` : "";
@@ -544,6 +608,7 @@ $("#refreshAllMetadata").addEventListener("click", async () => {
   ["Processed", "Enriched", "Skipped", "Failed"].forEach((name) => $(`#bulk${name}`).textContent = "0");
   $("#viewFailedItems").hidden = true;
   $("#failedItems").hidden = true;
+  $("#bulkCategoryStatus").innerHTML = "";
   $("#refreshAllMetadata").disabled = true;
   $("#refreshAllMetadata").textContent = "Refreshing…";
   try {
@@ -554,6 +619,9 @@ $("#refreshAllMetadata").addEventListener("click", async () => {
     $("#bulkFailed").textContent = result.failed;
     $("#bulkStatusTitle").textContent = "Metadata refresh complete";
     $("#bulkStatusNote").textContent = `${result.enriched} enriched · ${result.skipped} skipped · ${result.failed} failed`;
+    $("#bulkCategoryStatus").innerHTML = Object.entries(result.categories || {}).map(([name, counts]) =>
+      `<div><strong>${escapeHtml(name)}</strong><span>${counts.enriched} enriched · ${counts.skipped} skipped · ${counts.failed} failed</span></div>`
+    ).join("");
     const failed = result.failures.filter((item) => item.status === "failed");
     $("#viewFailedItems").hidden = !failed.length;
     $("#failedItems").innerHTML = failed.map((item) => `<div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.error)}</span></div>`).join("");
@@ -571,6 +639,9 @@ $("#viewFailedItems").addEventListener("click", () => {
   $("#viewFailedItems").textContent = $("#failedItems").hidden ? "View failed items" : "Hide failed items";
 });
 $("#menuButton").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
+$$(".settings-tab").forEach((button) =>
+  button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab))
+);
 $("#jellyfinForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   $("#jellyfinError").textContent = "";
@@ -579,6 +650,9 @@ $("#jellyfinForm").addEventListener("submit", async (event) => {
     $("#jellyfinKey").value = "";
     $("#jellyfinKey").placeholder = "API key saved — leave blank to keep it";
     $("#importJellyfin").disabled = false;
+    const discovered = await api("/api/jellyfin/libraries/refresh", { method: "POST", body: "{}" });
+    renderJellyfinLibraries(discovered.libraries || []);
+    if (discovered.sync) renderJellyfinSyncStatus(discovered.sync);
     toast("Jellyfin settings saved.");
   } catch (error) { $("#jellyfinError").textContent = error.message; }
 });
@@ -594,10 +668,44 @@ $("#testJellyfin").addEventListener("click", async () => {
     if (!$("#jellyfinName").value) $("#jellyfinName").value = data.server_name;
     renderLibraries(data.libraries);
     $("#importJellyfin").disabled = false;
+    if (!$("#jellyfinKey").value) {
+      const discovered = await api("/api/jellyfin/libraries/refresh", { method: "POST", body: "{}" });
+      renderJellyfinLibraries(discovered.libraries || []);
+      if (discovered.sync) renderJellyfinSyncStatus(discovered.sync);
+    }
   } catch (error) { setConnectionStatus(false); $("#jellyfinError").textContent = error.message; }
   finally { $("#testJellyfin").disabled = false; $("#testJellyfin").textContent = "Test Connection"; }
 });
 $("#importJellyfin").addEventListener("click", loadImportPreview);
+$("#refreshJellyfinLibraries").addEventListener("click", async () => {
+  $("#jellyfinError").textContent = "";
+  $("#refreshJellyfinLibraries").disabled = true;
+  $("#refreshJellyfinLibraries").textContent = "Refreshing…";
+  try {
+    await saveJellyfinLibraryConfig();
+    const data = await api("/api/jellyfin/libraries/refresh", { method: "POST", body: "{}" });
+    renderJellyfinLibraries(data.libraries || []);
+    if (data.sync) renderJellyfinSyncStatus(data.sync);
+    toast("Jellyfin libraries refreshed.");
+  } catch (error) { $("#jellyfinError").textContent = error.message; }
+  finally { $("#refreshJellyfinLibraries").disabled = false; $("#refreshJellyfinLibraries").textContent = "Refresh Libraries"; }
+});
+$("#syncJellyfinLibraries").addEventListener("click", async () => {
+  $("#jellyfinError").textContent = "";
+  $("#syncJellyfinLibraries").disabled = true;
+  $("#syncJellyfinLibraries").textContent = "Syncing…";
+  try {
+    await saveJellyfinLibraryConfig();
+    const result = await api("/api/jellyfin/sync", { method: "POST", body: "{}" });
+    renderJellyfinSyncStatus(result);
+    await Promise.all([loadJellyfinLibraries(), loadDashboard()]);
+    if (state.view === "collection") await loadCollection();
+  } catch (error) { $("#jellyfinError").textContent = error.message; }
+  finally { $("#syncJellyfinLibraries").disabled = false; $("#syncJellyfinLibraries").textContent = "Sync Selected Libraries"; }
+});
+$("#jellyfinAutoSync").addEventListener("change", () => {
+  saveJellyfinLibraryConfig().catch((error) => { $("#jellyfinError").textContent = error.message; });
+});
 $$(".preview-tab").forEach((tab) => tab.addEventListener("click", () => renderPreview(tab.dataset.preview)));
 $("#today").textContent = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(new Date()).toUpperCase();
 

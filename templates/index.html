@@ -82,7 +82,11 @@
           <div class="page-heading settings-heading">
             <div><p class="eyebrow">SYSTEM</p><h1>Settings</h1><p>Connect external sources to your MediaVault catalog.</p></div>
           </div>
-          <div class="settings-panel provider-panel">
+          <div class="settings-tabs">
+            <button class="settings-tab active" data-settings-tab="metadata">Metadata Providers</button>
+            <button class="settings-tab" data-settings-tab="jellyfin">Jellyfin Sync</button>
+          </div>
+          <div class="settings-panel provider-panel" data-settings-section="metadata">
             <div class="settings-panel-head">
               <span class="integration-mark tmdb-mark">TM</span>
               <div><h2>Metadata Providers</h2><p>Configure enrichment services. Credentials stay on this server.</p></div>
@@ -108,7 +112,7 @@
               </div>
             </form>
             <div class="bulk-refresh">
-              <div><p class="eyebrow">LIBRARY ENRICHMENT</p><h3>Refresh All Metadata</h3><p>Enrich every movie using your provider priority. Collector data is never changed.</p></div>
+              <div><p class="eyebrow">LIBRARY ENRICHMENT</p><h3>Refresh Movies & Music</h3><p>Enrich movies and albums using each category’s provider priority. Collector data is never changed.</p></div>
               <button type="button" class="button secondary" id="refreshAllMetadata">Refresh All Metadata</button>
             </div>
             <div class="bulk-status" id="bulkStatus" hidden>
@@ -119,11 +123,12 @@
                 <span><small>SKIPPED</small><b id="bulkSkipped">0</b></span>
                 <span><small>FAILED</small><b id="bulkFailed">0</b></span>
               </div>
+              <div class="bulk-category-status" id="bulkCategoryStatus"></div>
               <button class="text-button" id="viewFailedItems" hidden>View failed items</button>
               <div class="failed-items" id="failedItems" hidden></div>
             </div>
           </div>
-          <div class="settings-panel">
+          <div class="settings-panel" data-settings-section="jellyfin" hidden>
             <div class="settings-panel-head">
               <span class="integration-mark">J</span>
               <div><h2>Jellyfin</h2><p>Use your Jellyfin libraries as an external catalog source.</p></div>
@@ -137,15 +142,30 @@
               <div class="settings-actions full">
                 <button type="button" class="button secondary" id="testJellyfin">Test Connection</button>
                 <button type="submit" class="button primary" id="saveJellyfin">Save</button>
-                <button type="button" class="button secondary import-button" id="importJellyfin" disabled>Import Library</button>
+                <button type="button" class="button secondary import-button" id="importJellyfin" disabled>Movie Import Preview</button>
               </div>
             </form>
             <div id="connectionResult" class="connection-result" hidden>
               <div><strong>✓ Connected</strong><span id="connectedServer"></span></div>
               <div><small>LIBRARIES FOUND</small><div id="libraryList" class="library-list"></div></div>
             </div>
+            <div class="jellyfin-library-manager">
+              <div class="library-manager-head">
+                <div><p class="eyebrow">LIBRARY SYNC</p><h3>Jellyfin Libraries</h3><p>Choose which libraries MediaVault should catalog and how they map.</p></div>
+                <label class="toggle-row"><input type="checkbox" id="jellyfinAutoSync"><span>Auto Sync Enabled</span></label>
+              </div>
+              <div id="jellyfinLibraryRows" class="jellyfin-library-rows">
+                <div class="library-empty">Test the connection, then refresh libraries.</div>
+              </div>
+              <div class="library-manager-actions">
+                <button type="button" class="button secondary" id="refreshJellyfinLibraries">Refresh Libraries</button>
+                <button type="button" class="button primary" id="syncJellyfinLibraries">Sync Selected Libraries</button>
+                <span id="jellyfinLastSync">Last sync: Never</span>
+              </div>
+              <div id="jellyfinSyncStatus" class="sync-status" hidden></div>
+            </div>
           </div>
-          <div id="importPreview" class="import-preview" hidden>
+          <div id="importPreview" class="import-preview" data-settings-section="jellyfin" hidden>
             <div class="section-head"><div><h2>Import preview</h2><p>Review every Jellyfin movie before changing your catalog.</p></div><span id="previewCount" class="date-chip"></span></div>
             <div class="preview-tabs">
               <button class="preview-tab active" data-preview="matches">Matches <b id="matchCount">0</b></button>

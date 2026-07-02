@@ -60,11 +60,11 @@ Discogs and RAWG credentials can be stored for future Music and Games enrichment
 OpenLibrary requires no key and is reserved for the Books phase.
 
 Use **Settings → Metadata Providers → Refresh All Metadata** to enrich every
-movie in provider-priority order. MediaVault tries OMDb first by default, falls
-back to TMDB when configured, requires a safe title/year match, and reports
-processed, enriched, skipped, and failed counts. Per-item refresh uses the same
-priority rules. Jellyfin is displayed only as a library/source indicator, never
-as the metadata provider.
+movie and album in provider-priority order. MediaVault tries OMDb first for
+movies and MusicBrainz first for albums, requires a safe title/year/artist match,
+and reports processed, enriched, skipped, and failed counts by category.
+Per-item refresh uses the same priority rules. Jellyfin is displayed only as a
+library/source indicator, never as the metadata provider.
 
 Enriched metadata also appears throughout the collection grid and Dashboard
 Recently Added cards, including poster art, short summaries, runtime, rating,
@@ -84,3 +84,22 @@ Music Quick View separates provider metadata from MediaVault ownership and shows
 the physical/digital format (CD, Vinyl, Cassette, FLAC, or MP3) and Jellyfin as
 independent sources. Refreshing or changing a music provider never changes
 collector status, purchases, locations, tags, or notes.
+
+Settings is divided into **Metadata Providers** and **Jellyfin Sync** tabs.
+Jellyfin-imported albums retain album and artist source hints, allowing either
+Quick View **Refresh Metadata** or the bulk refresh tool to locate and attach an
+exact MusicBrainz release automatically.
+
+## Jellyfin library sync
+
+Jellyfin Settings discovers every server library and stores an independent
+enabled state and MediaVault category mapping. Movies, Television, Music, Books,
+and Games can be synced individually; unsupported libraries such as Photos stay
+visible but unmapped. Settings reports imported counts per library and the last
+sync timestamp, with controls for manual refresh, selected-library sync, and
+automatic sync after library refresh.
+
+Movie, series, album, book, and game records are created only when no matching
+catalog item exists. Exact matches receive a Jellyfin source attachment without
+changing collector fields. Imported albums are Music records and can then be
+enriched through MusicBrainz, Discogs, Cover Art Archive, or Last.fm.
