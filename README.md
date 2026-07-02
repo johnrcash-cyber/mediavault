@@ -114,3 +114,10 @@ Auto Sync configuration lives under Jellyfin Settings with startup, hourly,
 six-hour, daily, and manual-only frequencies. The most recent timestamp and
 result summary are persisted. A confirmed Full Refresh is available under
 Advanced actions for library rediscovery plus metadata refresh.
+
+At application startup, a separate background health pass checks Jellyfin,
+OMDb, TMDB, MusicBrainz, Discogs, and Last.fm concurrently with three-second
+timeouts. Settings shows Online, Offline, or Not Configured status, last checked
+time, and the most recent sanitized error. Health checks never trigger sync or
+metadata refresh, and provider outages do not block startup or cached catalog
+access.

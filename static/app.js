@@ -86,8 +86,34 @@ function setView(view, filters = {}) {
   if (view === "collection") loadCollection();
   if (view === "settings") {
     setSettingsTab(state.settingsTab);
-    Promise.all([loadJellyfinSettings(), loadProviderSettings()]);
+    Promise.all([loadJellyfinSettings(), loadProviderSettings(), loadSourceStatus()]);
   }
+}
+
+async function loadSourceStatus() {
+  try {
+    const statuses = await api("/api/source-status");
+    renderSourceStatus(statuses);
+    if (statuses.some((source) => source.status === "Checking")) {
+      setTimeout(() => {
+        if (state.view === "settings") loadSourceStatus();
+      }, 3500);
+    }
+  } catch (error) { toast(error.message); }
+}
+
+function renderSourceStatus(statuses) {
+  $("#sourceHealthGrid").innerHTML = statuses.map((source) => {
+    const statusClass = source.status.toLowerCase().replaceAll(" ", "-");
+    const checked = source.last_checked
+      ? new Date(source.last_checked).toLocaleString()
+      : "Not checked yet";
+    return `<article class="source-health-card">
+      <div><strong>${escapeHtml(source.source_name)}</strong><span class="health-status ${statusClass}"><i></i>${escapeHtml(source.status)}</span></div>
+      <small>Last checked ${escapeHtml(checked)}</small>
+      ${source.last_error ? `<p title="${escapeHtml(source.last_error)}">${escapeHtml(source.last_error)}</p>` : ""}
+    </article>`;
+  }).join("");
 }
 
 function setSettingsTab(tab) {
@@ -666,6 +692,15 @@ $("#refreshLibraryAction").addEventListener("click", async () => {
 $$(".settings-tab").forEach((button) =>
   button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab))
 );
+$("#refreshSourceStatus").addEventListener("click", async () => {
+  $("#refreshSourceStatus").disabled = true;
+  $("#refreshSourceStatus").textContent = "Checking…";
+  try {
+    renderSourceStatus(await api("/api/source-status/refresh", { method: "POST", body: "{}" }));
+    toast("Source status updated.");
+  } catch (error) { toast(`Source check failed: ${error.message}`, 5000); }
+  finally { $("#refreshSourceStatus").disabled = false; $("#refreshSourceStatus").textContent = "Check Now"; }
+});
 $("#jellyfinForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   $("#jellyfinError").textContent = "";

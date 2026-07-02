@@ -8,6 +8,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -126,6 +127,16 @@ def init_db() -> None:
             imported_count INTEGER NOT NULL DEFAULT 0,
             last_sync TEXT,
             UNIQUE(server_url, library_id)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS source_status (
+            source_name TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            last_checked TEXT,
+            last_error TEXT
         )
         """
     )
@@ -636,6 +647,139 @@ def provider_settings() -> dict:
         "lastfm_api_key": values.get("lastfm_api_key", ""),
         "rawg_api_key": values.get("rawg_api_key", ""),
     }
+
+
+SOURCE_NAMES = ("Jellyfin", "OMDb", "TMDB", "MusicBrainz", "Discogs", "Last.fm")
+
+
+def source_health_configuration() -> dict[str, dict | None]:
+    providers = provider_settings()
+    jellyfin = jellyfin_settings()
+    configurations: dict[str, dict | None] = {
+        "Jellyfin": None,
+        "OMDb": None,
+        "TMDB": None,
+        "MusicBrainz": {
+            "url": "https://musicbrainz.org/ws/2/release/"
+                   "?query=release%3Atest&limit=1&fmt=json",
+            "headers": {
+                "Accept": "application/json",
+                "User-Agent": "MediaVault/1.0 (personal media catalog)",
+            },
+        },
+        "Discogs": None,
+        "Last.fm": None,
+    }
+    if jellyfin["server_url"] and jellyfin["api_key"]:
+        configurations["Jellyfin"] = {
+            "url": f"{normalize_server_url(jellyfin['server_url'])}/System/Info",
+            "headers": {
+                "Accept": "application/json",
+                "X-Emby-Token": jellyfin["api_key"],
+                "User-Agent": "MediaVault/1.0",
+            },
+        }
+    if providers["omdb_api_key"]:
+        configurations["OMDb"] = {
+            "url": "https://www.omdbapi.com/?" + urllib.parse.urlencode({
+                "apikey": providers["omdb_api_key"], "i": "tt0133093", "r": "json",
+            }),
+            "headers": {"Accept": "application/json", "User-Agent": "MediaVault/1.0"},
+        }
+    if providers["tmdb_api_key"]:
+        tmdb_headers = {"Accept": "application/json", "User-Agent": "MediaVault/1.0"}
+        tmdb_query = {}
+        if providers["tmdb_api_key"].startswith("eyJ"):
+            tmdb_headers["Authorization"] = f"Bearer {providers['tmdb_api_key']}"
+        else:
+            tmdb_query["api_key"] = providers["tmdb_api_key"]
+        configurations["TMDB"] = {
+            "url": "https://api.themoviedb.org/3/configuration?"
+                   + urllib.parse.urlencode(tmdb_query),
+            "headers": tmdb_headers,
+        }
+    if providers["discogs_token"]:
+        configurations["Discogs"] = {
+            "url": "https://api.discogs.com/database/search?"
+                   + urllib.parse.urlencode({
+                       "q": "test", "type": "release", "per_page": 1,
+                       "token": providers["discogs_token"],
+                   }),
+            "headers": {"Accept": "application/json", "User-Agent": "MediaVault/1.0"},
+        }
+    if providers["lastfm_api_key"]:
+        configurations["Last.fm"] = {
+            "url": "https://ws.audioscrobbler.com/2.0/?"
+                   + urllib.parse.urlencode({
+                       "method": "album.search", "album": "test", "limit": 1,
+                       "api_key": providers["lastfm_api_key"], "format": "json",
+                   }),
+            "headers": {"Accept": "application/json", "User-Agent": "MediaVault/1.0"},
+        }
+    return configurations
+
+
+def check_source_health(name: str, config: dict | None) -> dict:
+    checked = datetime.now(timezone.utc).isoformat()
+    if config is None:
+        return {
+            "source_name": name, "status": "Not Configured",
+            "last_checked": checked, "last_error": "",
+        }
+    try:
+        request_ = urllib.request.Request(config["url"], headers=config["headers"])
+        with urllib.request.urlopen(request_, timeout=3) as response:
+            if not 200 <= response.status < 400:
+                raise ValueError(f"HTTP {response.status}")
+            response.read(1024)
+        return {
+            "source_name": name, "status": "Online",
+            "last_checked": checked, "last_error": "",
+        }
+    except urllib.error.HTTPError as exc:
+        error = f"Authentication failed (HTTP {exc.code})" if exc.code in (401, 403) else f"HTTP {exc.code}"
+    except urllib.error.URLError as exc:
+        error = str(getattr(exc, "reason", "Connection failed"))
+    except (TimeoutError, ValueError) as exc:
+        error = str(exc) or "Connection timed out"
+    return {
+        "source_name": name, "status": "Offline",
+        "last_checked": checked, "last_error": error[:300],
+    }
+
+
+def run_source_health_checks() -> list[dict]:
+    with app.app_context():
+        configurations = source_health_configuration()
+    results = []
+    with ThreadPoolExecutor(max_workers=len(SOURCE_NAMES)) as executor:
+        futures = {
+            executor.submit(check_source_health, name, configurations[name]): name
+            for name in SOURCE_NAMES
+        }
+        for future in as_completed(futures):
+            results.append(future.result())
+    with app.app_context():
+        db().executemany(
+            """
+            INSERT INTO source_status (
+                source_name, status, last_checked, last_error
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(source_name) DO UPDATE SET
+                status = excluded.status,
+                last_checked = excluded.last_checked,
+                last_error = excluded.last_error
+            """,
+            [
+                (
+                    result["source_name"], result["status"],
+                    result["last_checked"], result["last_error"],
+                )
+                for result in results
+            ],
+        )
+        db().commit()
+    return sorted(results, key=lambda item: SOURCE_NAMES.index(item["source_name"]))
 
 
 def public_json_request(url: str, provider: str) -> dict:
@@ -1686,6 +1830,29 @@ def get_provider_settings():
     })
 
 
+@app.get("/api/source-status")
+def get_source_status():
+    rows = {
+        row["source_name"]: dict(row)
+        for row in db().execute("SELECT * FROM source_status").fetchall()
+    }
+    configurations = source_health_configuration()
+    statuses = []
+    for name in SOURCE_NAMES:
+        statuses.append(rows.get(name) or {
+            "source_name": name,
+            "status": "Checking" if configurations[name] else "Not Configured",
+            "last_checked": None,
+            "last_error": "",
+        })
+    return jsonify(statuses)
+
+
+@app.post("/api/source-status/refresh")
+def refresh_source_status():
+    return jsonify(run_source_health_checks())
+
+
 @app.post("/api/settings/providers")
 def save_provider_settings():
     payload = request.get_json(silent=True) or {}
@@ -2281,5 +2448,16 @@ def schedule_auto_sync_if_due():
 
 init_db()
 
+if os.environ.get("MEDIAVAULT_DISABLE_STARTUP_CHECKS") != "1":
+    threading.Thread(
+        target=run_source_health_checks,
+        name="mediavault-source-health",
+        daemon=True,
+    ).start()
+
 if __name__ == "__main__":
-    app.run(debug=True, port=int(os.environ.get("PORT", "5050")))
+    app.run(
+        debug=True,
+        use_reloader=False,
+        port=int(os.environ.get("PORT", "5050")),
+    )

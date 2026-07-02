@@ -87,6 +87,10 @@
             <button class="settings-tab active" data-settings-tab="metadata">Metadata Providers</button>
             <button class="settings-tab" data-settings-tab="jellyfin">Jellyfin Sync</button>
           </div>
+          <div class="source-health-panel">
+            <div class="source-health-head"><div><p class="eyebrow">SOURCE HEALTH</p><h2>Connections</h2><p>Background availability checks. Cached catalog data remains available offline.</p></div><button class="button secondary" id="refreshSourceStatus">Check Now</button></div>
+            <div class="source-health-grid" id="sourceHealthGrid"></div>
+          </div>
           <div class="settings-panel provider-panel" data-settings-section="metadata">
             <div class="settings-panel-head">
               <span class="integration-mark tmdb-mark">TM</span>
