@@ -88,7 +88,7 @@ function setView(view, filters = {}) {
   if (view === "collection") loadCollection();
   if (view === "settings") {
     setSettingsTab(state.settingsTab);
-    Promise.all([loadJellyfinSettings(), loadProviderSettings(), loadSourceStatus(), loadSources()]);
+    Promise.all([loadProviderSettings(), loadSourceStatus(), loadSources()]);
   }
 }
 
@@ -783,7 +783,7 @@ $("#refreshLibraryAction").addEventListener("click", async () => {
     toast(`${result.processed || 0} processed · ${result.added || 0} added · ${result.updated || 0} updated · ${result.skipped || 0} skipped · ${result.failed || 0} failed`, 6000);
     await loadDashboard();
     if (state.view === "collection") await loadCollection();
-    if (state.view === "settings") await loadJellyfinLibraries();
+    if (state.view === "settings") await loadSources();
   } catch (error) { toast(`Library refresh failed: ${error.message}`, 6000); }
   finally { button.disabled = false; button.innerHTML = original; }
 });
@@ -802,7 +802,11 @@ $("#addSourceModal").addEventListener("click", (event) => {
 $$("[data-source-choice]").forEach((button) => button.addEventListener("click", () => {
   $("#addSourceModal").hidden = true;
   document.body.style.overflow = "";
-  if (button.dataset.sourceChoice === "jellyfin") $("#jellyfinSourceSetup").scrollIntoView({ behavior: "smooth" });
+  if (button.dataset.sourceChoice === "jellyfin") {
+    api("/api/sources/jellyfin/enable", { method: "POST", body: "{}" })
+      .then(() => { toast("Jellyfin source enabled."); loadSources(); })
+      .catch((error) => toast(error.message, 5000));
+  }
   if (button.dataset.sourceChoice === "import") openCatalogFilePicker();
   if (button.dataset.sourceChoice === "manual") openModal();
 }));
@@ -815,15 +819,39 @@ $("#catalogImportFile").addEventListener("change", (event) => {
 $("#exportCatalogButton").addEventListener("click", () => { window.location.href = "/api/catalog/export"; });
 $("#exportLocalCatalog").addEventListener("click", () => { window.location.href = "/api/catalog/export"; });
 $("#syncAllSourcesButton").addEventListener("click", () => $("#refreshLibraryAction").click());
-$("#sourceFullRefreshButton").addEventListener("click", () => $("#fullRefreshJellyfin").click());
+$("#sourceFullRefreshButton").addEventListener("click", async () => {
+  if (!confirm("Run a full source and metadata refresh? MediaVault will not delete records or overwrite collector fields.")) return;
+  try {
+    const result = await api("/api/jellyfin/full-refresh", { method: "POST", body: "{}" });
+    toast(`Full refresh complete · ${result.sync.added || 0} added · ${result.sync.updated || 0} updated · ${result.sync.failed || 0} failed`, 6000);
+    await Promise.all([loadSources(), loadDashboard()]);
+  } catch (error) { toast(error.message, 6000); }
+});
 $("#viewLocalItems").addEventListener("click", () => setView("collection", { type: "", status: "", origin: "" }));
 $("#viewManualItems").addEventListener("click", () => setView("collection", { type: "", status: "", origin: "manual" }));
 $("#addManualItem").addEventListener("click", () => openModal());
-$("#sourceTestJellyfin").addEventListener("click", () => $("#testJellyfin").click());
-$("#sourceRefreshLibraries").addEventListener("click", () => $("#refreshJellyfinLibraries").click());
-$("#sourceSyncJellyfin").addEventListener("click", () => $("#syncJellyfinLibraries").click());
-$("#sourceImportPreview").addEventListener("click", () => $("#importJellyfin").click());
-$("#editJellyfinSource").addEventListener("click", () => $("#jellyfinSourceSetup").scrollIntoView({ behavior: "smooth" }));
+$("#configureJellyfinSource").addEventListener("click", async () => {
+  try {
+    await api("/api/sources/jellyfin/enable", { method: "POST", body: "{}" });
+    toast("Jellyfin source enabled.");
+    await loadSources();
+  } catch (error) { toast(error.message, 5000); }
+});
+$("#sourceRefreshLibraries").addEventListener("click", async () => {
+  try {
+    await api("/api/jellyfin/libraries/refresh", { method: "POST", body: "{}" });
+    toast("Jellyfin libraries refreshed.");
+    await loadSources();
+  } catch (error) { toast(error.message, 5000); }
+});
+$("#sourceSyncJellyfin").addEventListener("click", () => $("#refreshLibraryAction").click());
+$("#disableJellyfinSource").addEventListener("click", async () => {
+  try {
+    await api("/api/sources/jellyfin/disable", { method: "POST", body: "{}" });
+    toast("Jellyfin source disabled.");
+    await loadSources();
+  } catch (error) { toast(error.message, 5000); }
+});
 $("#closeCatalogImport").addEventListener("click", closeCatalogImport);
 $("#catalogImportModal").addEventListener("click", (event) => {
   if (event.target === $("#catalogImportModal")) closeCatalogImport();
@@ -843,89 +871,6 @@ $("#refreshSourceStatus").addEventListener("click", async () => {
   } catch (error) { toast(`Source check failed: ${error.message}`, 5000); }
   finally { $("#refreshSourceStatus").disabled = false; $("#refreshSourceStatus").textContent = "Check Now"; }
 });
-$("#jellyfinForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  $("#jellyfinError").textContent = "";
-  try {
-    await api("/api/settings/jellyfin", { method: "POST", body: JSON.stringify(jellyfinFormData()) });
-    $("#jellyfinKey").value = "";
-    $("#jellyfinKey").placeholder = "API key saved — leave blank to keep it";
-    $("#importJellyfin").disabled = false;
-    const discovered = await api("/api/jellyfin/libraries/refresh", { method: "POST", body: "{}" });
-    renderJellyfinLibraries(discovered.libraries || []);
-    if (discovered.sync) renderJellyfinSyncStatus(discovered.sync);
-    toast("Jellyfin settings saved.");
-  } catch (error) { $("#jellyfinError").textContent = error.message; }
-});
-$("#testJellyfin").addEventListener("click", async () => {
-  $("#jellyfinError").textContent = "";
-  $("#testJellyfin").disabled = true;
-  $("#testJellyfin").textContent = "Connecting…";
-  setConnectionStatus(false, "Testing…");
-  try {
-    const data = await api("/api/jellyfin/test", { method: "POST", body: JSON.stringify(jellyfinFormData()) });
-    setConnectionStatus(true);
-    $("#connectedServer").textContent = `${data.server_name}${data.version ? ` · Jellyfin ${data.version}` : ""}`;
-    if (!$("#jellyfinName").value) $("#jellyfinName").value = data.server_name;
-    renderLibraries(data.libraries);
-    $("#importJellyfin").disabled = false;
-    if (!$("#jellyfinKey").value) {
-      const discovered = await api("/api/jellyfin/libraries/refresh", { method: "POST", body: "{}" });
-      renderJellyfinLibraries(discovered.libraries || []);
-      if (discovered.sync) renderJellyfinSyncStatus(discovered.sync);
-    }
-  } catch (error) { setConnectionStatus(false); $("#jellyfinError").textContent = error.message; }
-  finally { $("#testJellyfin").disabled = false; $("#testJellyfin").textContent = "Test Connection"; }
-});
-$("#importJellyfin").addEventListener("click", loadImportPreview);
-$("#refreshJellyfinLibraries").addEventListener("click", async () => {
-  $("#jellyfinError").textContent = "";
-  $("#refreshJellyfinLibraries").disabled = true;
-  $("#refreshJellyfinLibraries").textContent = "Refreshing…";
-  try {
-    await saveJellyfinLibraryConfig();
-    const data = await api("/api/jellyfin/libraries/refresh", { method: "POST", body: "{}" });
-    renderJellyfinLibraries(data.libraries || []);
-    if (data.sync) renderJellyfinSyncStatus(data.sync);
-    toast("Jellyfin libraries refreshed.");
-  } catch (error) { $("#jellyfinError").textContent = error.message; }
-  finally { $("#refreshJellyfinLibraries").disabled = false; $("#refreshJellyfinLibraries").textContent = "Refresh Libraries"; }
-});
-$("#syncJellyfinLibraries").addEventListener("click", async () => {
-  $("#jellyfinError").textContent = "";
-  $("#syncJellyfinLibraries").disabled = true;
-  $("#syncJellyfinLibraries").textContent = "Syncing…";
-  try {
-    await saveJellyfinLibraryConfig();
-    const result = await api("/api/jellyfin/sync", { method: "POST", body: "{}" });
-    renderJellyfinSyncStatus(result);
-    await Promise.all([loadJellyfinLibraries(), loadDashboard()]);
-    if (state.view === "collection") await loadCollection();
-  } catch (error) { $("#jellyfinError").textContent = error.message; }
-  finally { $("#syncJellyfinLibraries").disabled = false; $("#syncJellyfinLibraries").textContent = "Sync Selected Libraries"; }
-});
-$("#jellyfinAutoSync").addEventListener("change", () => {
-  $("#jellyfinSyncFrequency").disabled = !$("#jellyfinAutoSync").checked;
-  saveJellyfinLibraryConfig().catch((error) => { $("#jellyfinError").textContent = error.message; });
-});
-$("#jellyfinSyncFrequency").addEventListener("change", () => {
-  saveJellyfinLibraryConfig().catch((error) => { $("#jellyfinError").textContent = error.message; });
-});
-$("#fullRefreshJellyfin").addEventListener("click", async () => {
-  if (!confirm("Run a full Jellyfin and metadata refresh? This can make many provider requests, but will not overwrite or delete collector records.")) return;
-  $("#fullRefreshJellyfin").disabled = true;
-  $("#fullRefreshJellyfin").textContent = "Running Full Refresh…";
-  try {
-    await saveJellyfinLibraryConfig();
-    const result = await api("/api/jellyfin/full-refresh", { method: "POST", body: "{}" });
-    renderJellyfinSyncStatus(result.sync);
-    toast(`Full refresh complete · ${result.sync.added || 0} added · ${result.sync.updated || 0} updated · ${result.sync.failed || 0} failed`);
-    await Promise.all([loadJellyfinLibraries(), loadDashboard()]);
-    if (state.view === "collection") await loadCollection();
-  } catch (error) { $("#jellyfinError").textContent = error.message; }
-  finally { $("#fullRefreshJellyfin").disabled = false; $("#fullRefreshJellyfin").textContent = "Run Full Refresh"; }
-});
-$$(".preview-tab").forEach((tab) => tab.addEventListener("click", () => renderPreview(tab.dataset.preview)));
 $("#today").textContent = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(new Date()).toUpperCase();
 
 loadDashboard().catch((error) => toast(error.message));

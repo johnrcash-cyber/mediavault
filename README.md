@@ -129,12 +129,10 @@ exact MusicBrainz release automatically.
 
 ## Jellyfin library sync
 
-Jellyfin Settings discovers every server library and stores an independent
-enabled state and MediaVault category mapping. Movies, Television, Music, Books,
-and Games can be synced individually; unsupported libraries such as Photos stay
-visible but unmapped. Settings reports imported counts per library and the last
-sync timestamp, with controls for manual refresh, selected-library sync, and
-automatic sync after library refresh.
+The Jellyfin source stores discovered libraries and MediaVault category mappings
+for Movies, Television, Music, Books, and Games. The compact Sources card exposes
+Configure, Sync Now, Refresh Libraries, and Disable actions without placing the
+legacy connection and library-management panels on the Sources landing page.
 
 Movie, series, album, book, and game records are created only when no matching
 catalog item exists. Exact matches receive a Jellyfin source attachment without
@@ -146,11 +144,6 @@ away from the current view. It reports processed, added, updated, skipped, and
 failed items. Incremental sync refreshes Jellyfin source snapshots and fills
 missing provider metadata/artwork, but never overwrites collector data or
 deletes MediaVault records.
-
-Auto Sync configuration lives under Jellyfin Settings with startup, hourly,
-six-hour, daily, and manual-only frequencies. The most recent timestamp and
-result summary are persisted. A confirmed Full Refresh is available under
-Advanced actions for library rediscovery plus metadata refresh.
 
 At application startup, a separate background health pass checks Jellyfin,
 OMDb, TMDB, MusicBrainz, Discogs, and Last.fm concurrently with three-second

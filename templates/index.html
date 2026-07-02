@@ -154,7 +154,7 @@
                 <div class="source-card-head"><span class="source-card-icon jellyfin">J</span><div><h3>Jellyfin</h3><small>DIRECT CONNECTION</small></div><span class="source-state" id="jellyfinSourceState">Not Configured</span></div>
                 <p id="jellyfinSourceDescription">Connect Jellyfin libraries as external catalog sources.</p>
                 <div class="source-card-details"><span id="jellyfinSourceServer">No server configured</span><span id="jellyfinSourceLibraries">0 enabled libraries</span><span id="jellyfinSourceLastSync">Last sync: Never</span></div>
-                <div class="source-card-actions"><button class="text-button" id="sourceTestJellyfin">Test Connection</button><button class="text-button" id="sourceRefreshLibraries">Refresh Libraries</button><button class="text-button" id="sourceSyncJellyfin">Sync Now</button><button class="text-button" id="sourceImportPreview">Import Preview</button><button class="text-button" id="editJellyfinSource">Edit</button></div>
+                <div class="source-card-actions"><button class="text-button" id="configureJellyfinSource">Configure</button><button class="text-button" id="sourceSyncJellyfin">Sync Now</button><button class="text-button" id="sourceRefreshLibraries">Refresh Libraries</button><button class="text-button danger-text" id="disableJellyfinSource">Disable</button></div>
               </article>
               <article class="source-model-card">
                 <div class="source-card-head"><span class="source-card-icon import">⇩</span><div><h3>Catalog Import</h3><small>FILE IMPORT</small></div><span class="source-state online">Available</span></div>
@@ -171,59 +171,6 @@
             </div>
             <div class="future-sources"><span>Future sources</span><b>Plex</b><b>Steam</b><b>OpenLibrary</b><b>CSV / JSON uploads</b></div>
           </section>
-          <div class="settings-panel" id="jellyfinSourceSetup" data-settings-section="sources" hidden>
-            <div class="settings-panel-head">
-              <span class="integration-mark">J</span>
-              <div><h2>Jellyfin</h2><p>Use your Jellyfin libraries as an external catalog source.</p></div>
-              <span class="connection-badge" id="jellyfinBadge">Not tested</span>
-            </div>
-            <form id="jellyfinForm" class="settings-form">
-              <label><span>Server URL</span><input id="jellyfinUrl" type="url" required placeholder="http://192.168.1.10:8096"></label>
-              <label><span>API Key</span><input id="jellyfinKey" type="password" placeholder="Enter your Jellyfin API key"><small id="apiKeyHint">Stored locally in MediaVault.</small></label>
-              <label><span>Server Name</span><input id="jellyfinName" placeholder="Home Jellyfin"></label>
-              <p class="form-error full" id="jellyfinError"></p>
-              <div class="settings-actions full">
-                <button type="button" class="button secondary" id="testJellyfin">Test Connection</button>
-                <button type="submit" class="button primary" id="saveJellyfin">Save</button>
-                <button type="button" class="button secondary import-button" id="importJellyfin" disabled>Movie Import Preview</button>
-              </div>
-            </form>
-            <div id="connectionResult" class="connection-result" hidden>
-              <div><strong>✓ Connected</strong><span id="connectedServer"></span></div>
-              <div><small>LIBRARIES FOUND</small><div id="libraryList" class="library-list"></div></div>
-            </div>
-            <div class="jellyfin-library-manager">
-              <div class="library-manager-head">
-                <div><p class="eyebrow">LIBRARY SYNC</p><h3>Jellyfin Libraries</h3><p>Choose which libraries MediaVault should catalog and how they map.</p></div>
-              </div>
-              <div id="jellyfinLibraryRows" class="jellyfin-library-rows">
-                <div class="library-empty">Test the connection, then refresh libraries.</div>
-              </div>
-              <div class="library-manager-actions">
-                <button type="button" class="button secondary" id="refreshJellyfinLibraries">Refresh Libraries</button>
-                <button type="button" class="button primary" id="syncJellyfinLibraries">Sync Selected Libraries</button>
-              </div>
-              <div id="jellyfinSyncStatus" class="sync-status" hidden></div>
-            </div>
-            <div class="auto-sync-settings">
-              <div class="auto-sync-head"><div><p class="eyebrow">AUTOMATION</p><h3>Auto Sync</h3></div><label class="toggle-row"><input type="checkbox" id="jellyfinAutoSync"><span>Enabled</span></label></div>
-              <label><span>Frequency</span><select id="jellyfinSyncFrequency"><option value="manual">Manual only</option><option value="startup">On startup</option><option value="hourly">Every 1 hour</option><option value="six_hours">Every 6 hours</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label>
-              <div class="last-sync-summary"><strong id="jellyfinLastSync">Last sync: Never</strong><span id="jellyfinLastResult">No sync results yet.</span></div>
-            </div>
-            <details class="advanced-sync">
-              <summary>Advanced / manual actions <span>＋</span></summary>
-              <div><p>Full Refresh rediscovers libraries, syncs selected sources, and refreshes missing metadata. Collector records are never overwritten or deleted.</p><button type="button" class="button danger" id="fullRefreshJellyfin">Run Full Refresh</button></div>
-            </details>
-          </div>
-          <div id="importPreview" class="import-preview" data-settings-section="sources" hidden>
-            <div class="section-head"><div><h2>Import preview</h2><p>Review every Jellyfin movie before changing your catalog.</p></div><span id="previewCount" class="date-chip"></span></div>
-            <div class="preview-tabs">
-              <button class="preview-tab active" data-preview="matches">Matches <b id="matchCount">0</b></button>
-              <button class="preview-tab" data-preview="possible_matches">Possible Matches <b id="possibleCount">0</b></button>
-              <button class="preview-tab" data-preview="new_items">New Items <b id="newCount">0</b></button>
-            </div>
-            <div id="previewRows" class="preview-rows"></div>
-          </div>
         </section>
       </div>
     </main>

@@ -702,6 +702,10 @@ SOURCE_NAMES = ("Jellyfin", "OMDb", "TMDB", "MusicBrainz", "Discogs", "Last.fm")
 def source_health_configuration() -> dict[str, dict | None]:
     providers = provider_settings()
     jellyfin = jellyfin_settings()
+    disabled_row = connection.execute(
+        "SELECT value FROM app_settings WHERE key = 'jellyfin_source_disabled'"
+    ).fetchone()
+    jellyfin_disabled = bool(disabled_row and disabled_row["value"] == "1")
     configurations: dict[str, dict | None] = {
         "Jellyfin": None,
         "OMDb": None,
@@ -1895,7 +1899,7 @@ def source_summary():
         "manual": {"items": manual_count, "status": "Active"},
         "jellyfin": {
             "items": jellyfin_count,
-            "status": health["status"] if health else (
+            "status": "Disabled" if jellyfin_disabled else health["status"] if health else (
                 "Configured" if jellyfin["server_url"] and jellyfin["api_key"]
                 else "Not Configured"
             ),
@@ -2637,6 +2641,38 @@ def full_refresh_jellyfin():
         })
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/sources/jellyfin/disable")
+def disable_jellyfin_source():
+    db().execute("UPDATE jellyfin_libraries SET enabled = 0")
+    db().execute(
+        "INSERT INTO app_settings(key, value) VALUES('jellyfin_auto_sync', '0') "
+        "ON CONFLICT(key) DO UPDATE SET value = '0'"
+    )
+    db().execute(
+        "INSERT INTO app_settings(key, value) "
+        "VALUES('jellyfin_source_disabled', '1') "
+        "ON CONFLICT(key) DO UPDATE SET value = '1'"
+    )
+    db().commit()
+    return jsonify({"disabled": True})
+
+
+@app.post("/api/sources/jellyfin/enable")
+def enable_jellyfin_source():
+    settings = jellyfin_settings()
+    if not settings["server_url"] or not settings["api_key"]:
+        return jsonify({
+            "error": "Jellyfin is not configured yet. Source setup is coming next."
+        }), 400
+    db().execute(
+        "INSERT INTO app_settings(key, value) "
+        "VALUES('jellyfin_source_disabled', '0') "
+        "ON CONFLICT(key) DO UPDATE SET value = '0'"
+    )
+    db().commit()
+    return jsonify({"enabled": True})
 
 
 @app.post("/api/jellyfin/import-preview")
