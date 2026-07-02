@@ -85,13 +85,13 @@
           </div>
           <div class="settings-tabs">
             <button class="settings-tab active" data-settings-tab="metadata">Metadata Providers</button>
-            <button class="settings-tab" data-settings-tab="jellyfin">Jellyfin Sync</button>
-          </div>
-          <div class="source-health-panel">
-            <div class="source-health-head"><div><p class="eyebrow">SOURCE HEALTH</p><h2>Connections</h2><p>Background availability checks. Cached catalog data remains available offline.</p></div><button class="button secondary" id="refreshSourceStatus">Check Now</button></div>
-            <div class="source-health-grid" id="sourceHealthGrid"></div>
+            <button class="settings-tab" data-settings-tab="sources">Sources</button>
           </div>
           <div class="settings-panel provider-panel" data-settings-section="metadata">
+            <div class="source-health-panel embedded">
+              <div class="source-health-head"><div><p class="eyebrow">PROVIDER HEALTH</p><h2>Metadata Connections</h2><p>Availability for enrichment services. Catalog sources are managed separately.</p></div><button class="button secondary" id="refreshSourceStatus">Check Now</button></div>
+              <div class="source-health-grid" id="sourceHealthGrid"></div>
+            </div>
             <div class="settings-panel-head">
               <span class="integration-mark tmdb-mark">TM</span>
               <div><h2>Metadata Providers</h2><p>Configure enrichment services. Credentials stay on this server.</p></div>
@@ -133,7 +133,45 @@
               <div class="failed-items" id="failedItems" hidden></div>
             </div>
           </div>
-          <div class="settings-panel" data-settings-section="jellyfin" hidden>
+          <section class="sources-workspace" data-settings-section="sources" hidden>
+            <div class="sources-intro"><div><p class="eyebrow">CATALOG PROVENANCE</p><h2>Sources</h2><p>Sources manage how MediaVault receives and updates catalog data. MediaVault remains the master catalog.</p></div></div>
+            <div class="source-top-actions">
+              <button class="button primary" id="addSourceButton">＋ Add Source</button>
+              <button class="button secondary" id="importCatalogButton">Import Catalog</button>
+              <button class="button secondary" id="exportCatalogButton">Export Catalog</button>
+              <button class="button secondary" id="syncAllSourcesButton">Sync All Sources</button>
+              <button class="button danger" id="sourceFullRefreshButton">Full Refresh</button>
+              <input type="file" id="catalogImportFile" accept=".json,application/json" hidden>
+            </div>
+            <div class="source-card-grid">
+              <article class="source-model-card">
+                <div class="source-card-head"><span class="source-card-icon local">MV</span><div><h3>MediaVault Local Database</h3><small>INTERNAL</small></div><span class="source-state online">Active</span></div>
+                <p>Items stored directly inside MediaVault, including collector-owned fields.</p>
+                <div class="source-card-stats"><span><small>ITEMS</small><strong id="localSourceCount">0</strong></span><span><small>ROLE</small><strong>Master catalog</strong></span></div>
+                <div class="source-card-actions"><button class="text-button" id="viewLocalItems">View</button><button class="text-button" id="exportLocalCatalog">Export</button></div>
+              </article>
+              <article class="source-model-card">
+                <div class="source-card-head"><span class="source-card-icon jellyfin">J</span><div><h3>Jellyfin</h3><small>DIRECT CONNECTION</small></div><span class="source-state" id="jellyfinSourceState">Not Configured</span></div>
+                <p id="jellyfinSourceDescription">Connect Jellyfin libraries as external catalog sources.</p>
+                <div class="source-card-details"><span id="jellyfinSourceServer">No server configured</span><span id="jellyfinSourceLibraries">0 enabled libraries</span><span id="jellyfinSourceLastSync">Last sync: Never</span></div>
+                <div class="source-card-actions"><button class="text-button" id="sourceTestJellyfin">Test Connection</button><button class="text-button" id="sourceRefreshLibraries">Refresh Libraries</button><button class="text-button" id="sourceSyncJellyfin">Sync Now</button><button class="text-button" id="sourceImportPreview">Import Preview</button><button class="text-button" id="editJellyfinSource">Edit</button></div>
+              </article>
+              <article class="source-model-card">
+                <div class="source-card-head"><span class="source-card-icon import">⇩</span><div><h3>Catalog Import</h3><small>FILE IMPORT</small></div><span class="source-state online">Available</span></div>
+                <p>Preview JSON catalog files, match existing records, and explicitly create, attach, or ignore items.</p>
+                <div class="source-card-stats"><span><small>IMPORTED ITEMS</small><strong id="catalogImportCount">0</strong></span><span><small>FORMATS</small><strong>JSON</strong></span></div>
+                <div class="source-card-actions"><button class="text-button source-import-trigger">Import Catalog</button></div>
+              </article>
+              <article class="source-model-card">
+                <div class="source-card-head"><span class="source-card-icon manual">＋</span><div><h3>Manual Entry</h3><small>INTERNAL</small></div><span class="source-state online">Active</span></div>
+                <p>Items created directly with Add Media and managed entirely by MediaVault.</p>
+                <div class="source-card-stats"><span><small>MANUAL ITEMS</small><strong id="manualSourceCount">0</strong></span><span><small>SETUP</small><strong>None required</strong></span></div>
+                <div class="source-card-actions"><button class="text-button" id="viewManualItems">View Manual Items</button><button class="text-button" id="addManualItem">Add Media</button></div>
+              </article>
+            </div>
+            <div class="future-sources"><span>Future sources</span><b>Plex</b><b>Steam</b><b>OpenLibrary</b><b>CSV / JSON uploads</b></div>
+          </section>
+          <div class="settings-panel" id="jellyfinSourceSetup" data-settings-section="sources" hidden>
             <div class="settings-panel-head">
               <span class="integration-mark">J</span>
               <div><h2>Jellyfin</h2><p>Use your Jellyfin libraries as an external catalog source.</p></div>
@@ -169,7 +207,7 @@
             </div>
             <div class="auto-sync-settings">
               <div class="auto-sync-head"><div><p class="eyebrow">AUTOMATION</p><h3>Auto Sync</h3></div><label class="toggle-row"><input type="checkbox" id="jellyfinAutoSync"><span>Enabled</span></label></div>
-              <label><span>Frequency</span><select id="jellyfinSyncFrequency"><option value="startup">On startup</option><option value="hourly">Every 1 hour</option><option value="six_hours">Every 6 hours</option><option value="daily">Daily</option><option value="manual">Manual only</option></select></label>
+              <label><span>Frequency</span><select id="jellyfinSyncFrequency"><option value="manual">Manual only</option><option value="startup">On startup</option><option value="hourly">Every 1 hour</option><option value="six_hours">Every 6 hours</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label>
               <div class="last-sync-summary"><strong id="jellyfinLastSync">Last sync: Never</strong><span id="jellyfinLastResult">No sync results yet.</span></div>
             </div>
             <details class="advanced-sync">
@@ -177,7 +215,7 @@
               <div><p>Full Refresh rediscovers libraries, syncs selected sources, and refreshes missing metadata. Collector records are never overwritten or deleted.</p><button type="button" class="button danger" id="fullRefreshJellyfin">Run Full Refresh</button></div>
             </details>
           </div>
-          <div id="importPreview" class="import-preview" data-settings-section="jellyfin" hidden>
+          <div id="importPreview" class="import-preview" data-settings-section="sources" hidden>
             <div class="section-head"><div><h2>Import preview</h2><p>Review every Jellyfin movie before changing your catalog.</p></div><span id="previewCount" class="date-chip"></span></div>
             <div class="preview-tabs">
               <button class="preview-tab active" data-preview="matches">Matches <b id="matchCount">0</b></button>
@@ -189,6 +227,34 @@
         </section>
       </div>
     </main>
+  </div>
+
+  <div class="modal-backdrop" id="addSourceModal" hidden>
+    <div class="modal source-picker-modal" role="dialog" aria-modal="true" aria-labelledby="addSourceTitle">
+      <div class="modal-head"><div><p class="eyebrow">CATALOG SOURCE</p><h2 id="addSourceTitle">Add Source</h2></div><button class="icon-button" id="closeAddSource" aria-label="Close">×</button></div>
+      <div class="source-picker">
+        <button data-source-choice="jellyfin"><span class="source-card-icon jellyfin">J</span><strong>Jellyfin Direct Connection</strong><small>Connect a server and choose libraries.</small></button>
+        <button data-source-choice="import"><span class="source-card-icon import">⇩</span><strong>Catalog Import</strong><small>Upload and preview a MediaVault JSON catalog.</small></button>
+        <button data-source-choice="manual"><span class="source-card-icon manual">＋</span><strong>Manual Entry / Local Database</strong><small>No setup required. Add an item directly.</small></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="catalogImportModal" hidden>
+    <div class="modal catalog-import-modal" role="dialog" aria-modal="true" aria-labelledby="catalogImportTitle">
+      <div class="modal-head"><div><p class="eyebrow">CATALOG IMPORT</p><h2 id="catalogImportTitle">Review JSON Import</h2></div><button class="icon-button" id="closeCatalogImport" aria-label="Close">×</button></div>
+      <div class="catalog-import-body">
+        <div class="import-counts" id="catalogImportCounts"></div>
+        <div class="preview-tabs catalog-preview-tabs">
+          <button class="preview-tab active" data-catalog-preview="new_items">New Items <b>0</b></button>
+          <button class="preview-tab" data-catalog-preview="matches">Matches <b>0</b></button>
+          <button class="preview-tab" data-catalog-preview="possible_duplicates">Possible Duplicates <b>0</b></button>
+          <button class="preview-tab" data-catalog-preview="ignored">Ignored <b>0</b></button>
+        </div>
+        <p class="form-error" id="catalogImportError"></p>
+        <div class="catalog-preview-rows" id="catalogPreviewRows"></div>
+      </div>
+    </div>
   </div>
 
   <div class="modal-backdrop" id="quickView" hidden>

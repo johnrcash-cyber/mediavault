@@ -158,3 +158,21 @@ timeouts. Settings shows Online, Offline, or Not Configured status, last checked
 time, and the most recent sanitized error. Health checks never trigger sync or
 metadata refresh, and provider outages do not block startup or cached catalog
 access.
+
+## Sources and catalog portability
+
+Settings treats catalog provenance as **Sources**. MediaVault Local Database,
+Jellyfin, Catalog Import, and Manual Entry appear as independent source cards;
+Jellyfin is one source rather than the organizing model. Metadata provider health
+stays under Metadata Providers.
+
+Top-level source actions include Add Source, Import Catalog, Export Catalog,
+Sync All Sources, and a confirmed Full Refresh. JSON exports contain collector
+fields, tags, notes, metadata links, and non-secret source references. API keys
+and tokens are never exported.
+
+JSON imports are previewed before applying. Items are grouped as new, exact
+matches, possible duplicates, or ignored, and each review decision explicitly
+creates an item, attaches an import source, or ignores it. Import attachment
+never overwrites existing collector fields. CSV import is reserved for a later
+phase.

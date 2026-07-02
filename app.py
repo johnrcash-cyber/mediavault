@@ -9,6 +9,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -141,6 +142,49 @@ def init_db() -> None:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS catalog_imports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            item_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS catalog_import_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            import_id INTEGER NOT NULL,
+            source_key TEXT NOT NULL,
+            media_id INTEGER,
+            action TEXT NOT NULL CHECK(action IN ('created', 'attached', 'ignored')),
+            created_at TEXT NOT NULL,
+            UNIQUE(import_id, source_key),
+            FOREIGN KEY(import_id) REFERENCES catalog_imports(id),
+            FOREIGN KEY(media_id) REFERENCES media(id) ON DELETE RESTRICT
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS import_previews (
+            token TEXT PRIMARY KEY,
+            filename TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            import_id INTEGER
+        )
+        """
+    )
+    preview_columns = {
+        row[1] for row in connection.execute(
+            "PRAGMA table_info(import_previews)"
+        ).fetchall()
+    }
+    if "import_id" not in preview_columns:
+        connection.execute("ALTER TABLE import_previews ADD COLUMN import_id INTEGER")
     connection.commit()
     connection.close()
 
@@ -321,7 +365,9 @@ def auto_sync_frequency() -> str:
         "WHERE key = 'jellyfin_auto_sync_frequency'"
     ).fetchone()
     value = row["value"] if row else "manual"
-    return value if value in ("startup", "hourly", "six_hours", "daily", "manual") else "manual"
+    return value if value in (
+        "startup", "hourly", "six_hours", "daily", "weekly", "manual"
+    ) else "manual"
 
 
 def last_sync_summary() -> dict | None:
@@ -1527,6 +1573,7 @@ def list_media():
     search = request.args.get("q", "").strip()
     media_type = request.args.get("type", "").strip()
     status = request.args.get("status", "").strip()
+    source = request.args.get("source", "").strip()
     params: list = []
     where: list[str] = []
 
@@ -1542,6 +1589,11 @@ def list_media():
     if status:
         where.append("m.status = ?")
         params.append(status)
+    if source == "manual":
+        where.append(
+            "NOT EXISTS (SELECT 1 FROM jellyfin_sources js WHERE js.media_id = m.id) "
+            "AND NOT EXISTS (SELECT 1 FROM catalog_import_links ci WHERE ci.media_id = m.id)"
+        )
 
     clause = f"WHERE {' AND '.join(where)}" if where else ""
     rows = db().execute(
@@ -1799,6 +1851,296 @@ def dashboard():
         """
     ).fetchall()
     return jsonify({**counts, "recent": [row_to_card_dict(row) for row in recent]})
+
+
+@app.get("/api/sources")
+def source_summary():
+    connection = db()
+    total = connection.execute("SELECT COUNT(*) FROM media").fetchone()[0]
+    jellyfin_count = connection.execute(
+        "SELECT COUNT(DISTINCT media_id) FROM jellyfin_sources "
+        "WHERE media_id IS NOT NULL AND action IN ('attached', 'created')"
+    ).fetchone()[0]
+    import_count = connection.execute(
+        "SELECT COUNT(DISTINCT media_id) FROM catalog_import_links "
+        "WHERE media_id IS NOT NULL AND action IN ('attached', 'created')"
+    ).fetchone()[0]
+    manual_count = connection.execute(
+        """
+        SELECT COUNT(*) FROM media m
+        WHERE NOT EXISTS (
+            SELECT 1 FROM jellyfin_sources js WHERE js.media_id = m.id
+        ) AND NOT EXISTS (
+            SELECT 1 FROM catalog_import_links ci WHERE ci.media_id = m.id
+        )
+        """
+    ).fetchone()[0]
+    jellyfin = jellyfin_settings()
+    health = connection.execute(
+        "SELECT status FROM source_status WHERE source_name = 'Jellyfin'"
+    ).fetchone()
+    libraries = connection.execute(
+        "SELECT COUNT(*) AS total, "
+        "SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) AS enabled "
+        "FROM jellyfin_libraries"
+    ).fetchone()
+    last_sync = connection.execute(
+        "SELECT MAX(last_sync) FROM jellyfin_libraries"
+    ).fetchone()[0]
+    last_import = connection.execute(
+        "SELECT * FROM catalog_imports ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    return jsonify({
+        "local": {"items": total, "status": "Active"},
+        "manual": {"items": manual_count, "status": "Active"},
+        "jellyfin": {
+            "items": jellyfin_count,
+            "status": health["status"] if health else (
+                "Configured" if jellyfin["server_url"] and jellyfin["api_key"]
+                else "Not Configured"
+            ),
+            "server_name": jellyfin["server_name"],
+            "server_url": jellyfin["server_url"],
+            "enabled_libraries": libraries["enabled"] or 0,
+            "library_count": libraries["total"] or 0,
+            "last_sync": last_sync,
+            "auto_sync": auto_sync_enabled(),
+            "frequency": auto_sync_frequency(),
+        },
+        "catalog_import": {
+            "items": import_count,
+            "status": "Available",
+            "last_import": dict(last_import) if last_import else None,
+            "formats": ["JSON", "CSV (coming later)"],
+        },
+    })
+
+
+@app.get("/api/catalog/export")
+def export_catalog():
+    connection = db()
+    rows = connection.execute("SELECT * FROM media ORDER BY id").fetchall()
+    catalog_items = []
+    for row in rows:
+        collector = row_to_dict(row)
+        metadata_row = connection.execute(
+            "SELECT provider, external_id, metadata_json, refreshed_at "
+            "FROM metadata_attachments WHERE media_id = ?",
+            (row["id"],),
+        ).fetchone()
+        jellyfin_rows = connection.execute(
+            "SELECT jellyfin_item_id, jellyfin_library_id, "
+            "jellyfin_library_name, source_title, source_year, action "
+            "FROM jellyfin_sources WHERE media_id = ?",
+            (row["id"],),
+        ).fetchall()
+        import_rows = connection.execute(
+            "SELECT source_key, action FROM catalog_import_links "
+            "WHERE media_id = ?",
+            (row["id"],),
+        ).fetchall()
+        metadata = None
+        if metadata_row:
+            metadata = {
+                "provider": metadata_row["provider"],
+                "external_id": metadata_row["external_id"],
+                "refreshed_at": metadata_row["refreshed_at"],
+                "data": json.loads(metadata_row["metadata_json"] or "{}"),
+            }
+        catalog_items.append({
+            "source_key": str(row["id"]),
+            "collector": collector,
+            "metadata": metadata,
+            "sources": {
+                "jellyfin": [dict(source) for source in jellyfin_rows],
+                "catalog_imports": [dict(source) for source in import_rows],
+            },
+        })
+    payload = {
+        "application": "MediaVault",
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "version": 1,
+        "catalog_items": catalog_items,
+    }
+    body = json.dumps(payload, ensure_ascii=False, indent=2)
+    filename = f"mediavault-export-{datetime.now().date().isoformat()}.json"
+    return Response(
+        body,
+        content_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/catalog/import/preview")
+def preview_catalog_import():
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return jsonify({"error": "Choose a MediaVault JSON export file."}), 400
+    if not upload.filename.casefold().endswith(".json"):
+        return jsonify({"error": "JSON is supported first; CSV is coming later."}), 400
+    raw = upload.read(10 * 1024 * 1024 + 1)
+    if len(raw) > 10 * 1024 * 1024:
+        return jsonify({"error": "Import files must be 10 MB or smaller."}), 400
+    try:
+        payload = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return jsonify({"error": "The selected file is not valid JSON."}), 400
+    incoming = (
+        payload.get("catalog_items", []) if isinstance(payload, dict)
+        else payload if isinstance(payload, list) else []
+    )
+    existing = [
+        dict(row) for row in db().execute(
+            "SELECT id, title, year, media_type, format, status FROM media"
+        ).fetchall()
+    ]
+    preview_items = []
+    counts = {"new_items": 0, "matches": 0, "possible_duplicates": 0, "ignored": 0}
+    for index, raw_item in enumerate(incoming):
+        wrapper = raw_item if isinstance(raw_item, dict) else {}
+        collector = wrapper.get("collector", wrapper)
+        if not isinstance(collector, dict) or not str(collector.get("title", "")).strip():
+            counts["ignored"] += 1
+            continue
+        title = str(collector["title"]).strip()
+        year = collector.get("year")
+        media_type = collector.get("media_type", "Other")
+        exact = next(
+            (
+                item for item in existing
+                if normalized_title(item["title"]) == normalized_title(title)
+                and item["media_type"] == media_type
+                and (not year or not item["year"] or year == item["year"])
+            ),
+            None,
+        )
+        candidates = sorted(
+            (
+                (
+                    SequenceMatcher(
+                        None, normalized_title(title),
+                        normalized_title(item["title"]),
+                    ).ratio(),
+                    item,
+                )
+                for item in existing if item["media_type"] == media_type
+            ),
+            key=lambda value: value[0],
+            reverse=True,
+        )
+        if exact:
+            category, match, confidence = "matches", exact, 100
+        elif candidates and candidates[0][0] >= 0.72:
+            category, match = "possible_duplicates", candidates[0][1]
+            confidence = round(candidates[0][0] * 100)
+        else:
+            category, match, confidence = "new_items", None, None
+        counts[category] += 1
+        preview_items.append({
+            "index": index,
+            "source_key": str(wrapper.get("source_key", index)),
+            "collector": collector,
+            "metadata": wrapper.get("metadata"),
+            "category": category,
+            "match": match,
+            "confidence": confidence,
+        })
+    token = uuid.uuid4().hex
+    db().execute(
+        "INSERT INTO import_previews(token, filename, payload_json, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (
+            token, upload.filename,
+            json.dumps(preview_items, separators=(",", ":")),
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    db().commit()
+    return jsonify({"token": token, "counts": counts, "items": preview_items})
+
+
+@app.post("/api/catalog/import/apply")
+def apply_catalog_import():
+    payload = request.get_json(silent=True) or {}
+    token = str(payload.get("token", ""))
+    index = payload.get("index")
+    action = str(payload.get("action", ""))
+    if action not in ("create", "attach", "ignore"):
+        return jsonify({"error": "Choose create, attach, or ignore."}), 400
+    preview = db().execute(
+        "SELECT * FROM import_previews WHERE token = ?", (token,)
+    ).fetchone()
+    if not preview:
+        return jsonify({"error": "Import preview expired or was not found."}), 404
+    items = json.loads(preview["payload_json"])
+    item = next((value for value in items if value["index"] == index), None)
+    if not item:
+        return jsonify({"error": "Import item was not found."}), 404
+    import_id = preview["import_id"]
+    now = datetime.now(timezone.utc).isoformat()
+    if not import_id:
+        cursor = db().execute(
+            "INSERT INTO catalog_imports(filename, item_count, created_at) "
+            "VALUES (?, ?, ?)",
+            (preview["filename"], len(items), now),
+        )
+        import_id = cursor.lastrowid
+        db().execute(
+            "UPDATE import_previews SET import_id = ? WHERE token = ?",
+            (import_id, token),
+        )
+    media_id = None
+    stored_action = "ignored"
+    if action == "attach":
+        media_id = payload.get("media_id") or (
+            item.get("match") or {}
+        ).get("id")
+        if not media_id or not db().execute(
+            "SELECT 1 FROM media WHERE id = ?", (media_id,)
+        ).fetchone():
+            return jsonify({"error": "Choose a valid MediaVault item."}), 400
+        stored_action = "attached"
+    elif action == "create":
+        try:
+            clean = clean_payload(item["collector"])
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        columns = ", ".join(clean.keys())
+        placeholders = ", ".join("?" for _ in clean)
+        cursor = db().execute(
+            f"INSERT INTO media ({columns}, created_at, updated_at) "
+            f"VALUES ({placeholders}, ?, ?)",
+            [*clean.values(), now, now],
+        )
+        media_id = cursor.lastrowid
+        stored_action = "created"
+        metadata = item.get("metadata")
+        if metadata and metadata.get("provider") and metadata.get("external_id"):
+            try:
+                db().execute(
+                    "INSERT INTO metadata_attachments("
+                    "media_id, provider, external_id, metadata_json, "
+                    "refreshed_at, created_at) VALUES(?,?,?,?,?,?)",
+                    (
+                        media_id, metadata["provider"], metadata["external_id"],
+                        json.dumps(metadata.get("data") or {}, separators=(",", ":")),
+                        metadata.get("refreshed_at") or now, now,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                pass
+    try:
+        db().execute(
+            "INSERT INTO catalog_import_links("
+            "import_id, source_key, media_id, action, created_at) "
+            "VALUES(?,?,?,?,?)",
+            (import_id, item["source_key"], media_id, stored_action, now),
+        )
+        db().commit()
+    except sqlite3.IntegrityError:
+        db().rollback()
+        return jsonify({"error": "This import item has already been handled."}), 409
+    return jsonify({"action": stored_action, "media_id": media_id})
 
 
 @app.get("/api/settings/jellyfin")
@@ -2260,7 +2602,9 @@ def update_jellyfin_libraries():
         ("1" if payload.get("auto_sync") else "0",),
     )
     frequency = str(payload.get("frequency", "manual"))
-    if frequency not in ("startup", "hourly", "six_hours", "daily", "manual"):
+    if frequency not in (
+        "startup", "hourly", "six_hours", "daily", "weekly", "manual"
+    ):
         frequency = "manual"
     db().execute(
         "INSERT INTO app_settings(key, value) "
@@ -2433,7 +2777,10 @@ def schedule_auto_sync_if_due():
         except (TypeError, ValueError):
             pass
     now = datetime.now(timezone.utc)
-    intervals = {"hourly": 3600, "six_hours": 21600, "daily": 86400}
+    intervals = {
+        "hourly": 3600, "six_hours": 21600,
+        "daily": 86400, "weekly": 604800,
+    }
     due = False
     if frequency == "startup":
         due = not _startup_sync_scheduled

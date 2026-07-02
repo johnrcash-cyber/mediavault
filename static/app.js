@@ -1,6 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => document.querySelectorAll(selector);
-const state = { query: "", type: "", status: "", view: "dashboard", items: [], jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviders: ["musicbrainz"], settingsTab: "metadata" };
+const state = { query: "", type: "", status: "", origin: "", view: "dashboard", items: [], jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviders: ["musicbrainz"], settingsTab: "metadata", catalogPreview: null, catalogCategory: "new_items" };
 const typeIcons = { Movies: "▶", Television: "TV", Music: "♫", Games: "✦", Books: "B", Other: "MV" };
 
 async function api(url, options = {}) {
@@ -65,9 +65,10 @@ async function loadCollection() {
   if (state.query) params.set("q", state.query);
   if (state.type) params.set("type", state.type);
   if (state.status) params.set("status", state.status);
+  if (state.origin) params.set("source", state.origin);
   state.items = await api(`/api/media?${params}`);
   $("#collectionGrid").innerHTML = state.items.length ? state.items.map(card).join("") : emptyState(Boolean(state.query || state.type || state.status));
-  $("#collectionTitle").textContent = state.type || state.status || "My Collection";
+  $("#collectionTitle").textContent = state.origin === "manual" ? "Manual Items" : state.type || state.status || "My Collection";
   $("#resultSummary").textContent = `${state.items.length} ${state.items.length === 1 ? "item" : "items"} found`;
 }
 
@@ -75,6 +76,7 @@ function setView(view, filters = {}) {
   state.view = view;
   if ("type" in filters) state.type = filters.type;
   if ("status" in filters) state.status = filters.status;
+  if ("origin" in filters) state.origin = filters.origin;
   $("#dashboardView").hidden = view !== "dashboard";
   $("#collectionView").hidden = view !== "collection";
   $("#settingsView").hidden = view !== "settings";
@@ -86,8 +88,25 @@ function setView(view, filters = {}) {
   if (view === "collection") loadCollection();
   if (view === "settings") {
     setSettingsTab(state.settingsTab);
-    Promise.all([loadJellyfinSettings(), loadProviderSettings(), loadSourceStatus()]);
+    Promise.all([loadJellyfinSettings(), loadProviderSettings(), loadSourceStatus(), loadSources()]);
   }
+}
+
+async function loadSources() {
+  try {
+    const data = await api("/api/sources");
+    $("#localSourceCount").textContent = data.local.items;
+    $("#manualSourceCount").textContent = data.manual.items;
+    $("#catalogImportCount").textContent = data.catalog_import.items;
+    $("#jellyfinSourceState").textContent = data.jellyfin.status;
+    $("#jellyfinSourceState").className = `source-state ${data.jellyfin.status.toLowerCase().replaceAll(" ", "-")}`;
+    $("#jellyfinSourceServer").textContent = data.jellyfin.server_name || data.jellyfin.server_url || "No server configured";
+    $("#jellyfinSourceDescription").textContent = data.jellyfin.server_url
+      ? data.jellyfin.server_url
+      : "Connect Jellyfin libraries as external catalog sources.";
+    $("#jellyfinSourceLibraries").textContent = `${data.jellyfin.enabled_libraries} of ${data.jellyfin.library_count} libraries enabled`;
+    $("#jellyfinSourceLastSync").textContent = `Last sync: ${data.jellyfin.last_sync ? new Date(data.jellyfin.last_sync).toLocaleString() : "Never"}`;
+  } catch (error) { toast(error.message); }
 }
 
 async function loadSourceStatus() {
@@ -103,7 +122,9 @@ async function loadSourceStatus() {
 }
 
 function renderSourceStatus(statuses) {
-  $("#sourceHealthGrid").innerHTML = statuses.map((source) => {
+  $("#sourceHealthGrid").innerHTML = statuses
+    .filter((source) => source.source_name !== "Jellyfin")
+    .map((source) => {
     const statusClass = source.status.toLowerCase().replaceAll(" ", "-");
     const checked = source.last_checked
       ? new Date(source.last_checked).toLocaleString()
@@ -113,7 +134,7 @@ function renderSourceStatus(statuses) {
       <small>Last checked ${escapeHtml(checked)}</small>
       ${source.last_error ? `<p title="${escapeHtml(source.last_error)}">${escapeHtml(source.last_error)}</p>` : ""}
     </article>`;
-  }).join("");
+    }).join("");
 }
 
 function setSettingsTab(tab) {
@@ -123,7 +144,7 @@ function setSettingsTab(tab) {
   );
   $$("[data-settings-section]").forEach((section) => {
     section.hidden = section.id === "importPreview"
-      ? tab !== "jellyfin" || !state.jellyfinPreview
+      ? tab !== "sources" || !state.jellyfinPreview
       : section.dataset.settingsSection !== tab;
   });
 }
@@ -394,6 +415,61 @@ function renderMetadataResults(results) {
     </article>`).join("") : '<div class="empty-state"><strong>No matches found.</strong><span>Try a broader title or remove the year.</span></div>';
 }
 
+function openCatalogFilePicker() {
+  $("#catalogImportFile").value = "";
+  $("#catalogImportFile").click();
+}
+
+async function previewCatalogFile(file) {
+  const form = new FormData();
+  form.append("file", file);
+  $("#catalogImportError").textContent = "";
+  const response = await fetch("/api/catalog/import/preview", {
+    method: "POST", body: form,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Catalog preview failed.");
+  state.catalogPreview = data;
+  state.catalogCategory = data.counts.new_items ? "new_items"
+    : data.counts.matches ? "matches" : "possible_duplicates";
+  $("#catalogImportCounts").innerHTML = `<strong>${file.name}</strong><span>${data.items.length} reviewable items</span>`;
+  $$(".catalog-preview-tabs .preview-tab").forEach((tab) => {
+    const count = data.counts[tab.dataset.catalogPreview] || 0;
+    tab.querySelector("b").textContent = count;
+  });
+  renderCatalogPreview();
+  $("#catalogImportModal").hidden = false;
+  document.body.style.overflow = "hidden";
+}
+
+function renderCatalogPreview(category = state.catalogCategory) {
+  state.catalogCategory = category;
+  $$(".catalog-preview-tabs .preview-tab").forEach((tab) =>
+    tab.classList.toggle("active", tab.dataset.catalogPreview === category)
+  );
+  const items = (state.catalogPreview?.items || []).filter(
+    (item) => item.category === category && !item.handled
+  );
+  $("#catalogPreviewRows").innerHTML = items.length ? items.map((item) => {
+    const collector = item.collector;
+    const match = item.match;
+    return `<article class="catalog-preview-row" data-import-index="${item.index}">
+      <div><small>${escapeHtml(collector.media_type || "Other")} · ${collector.year || "Year unknown"}</small><strong>${escapeHtml(collector.title)}</strong><span>${escapeHtml(collector.format || "Other")}</span></div>
+      ${match ? `<div class="catalog-match"><small>MEDIAVAULT ${item.confidence || ""}%</small><strong>${escapeHtml(match.title)}</strong><span>${match.year || "Year unknown"} · ${escapeHtml(match.format)}</span></div>` : '<div class="catalog-match empty"><small>MEDIAVAULT</small><strong>New catalog item</strong></div>'}
+      <div class="catalog-row-actions">
+        ${match ? `<button class="button secondary catalog-import-action" data-action="attach" data-media-id="${match.id}">Attach Import Source</button>` : ""}
+        <button class="button secondary catalog-import-action" data-action="create">Create Item</button>
+        <button class="text-button catalog-import-action" data-action="ignore">Ignore</button>
+      </div>
+    </article>`;
+  }).join("") : '<div class="empty-state"><strong>Nothing waiting here.</strong><span>All items in this group have been reviewed.</span></div>';
+}
+
+function closeCatalogImport() {
+  $("#catalogImportModal").hidden = true;
+  document.body.style.overflow = "";
+}
+
 function closeQuickView() {
   $("#quickView").hidden = true;
   document.body.style.overflow = "";
@@ -441,6 +517,28 @@ document.addEventListener("click", async (event) => {
     try { await openQuickView(mediaCard.dataset.id); } catch (error) { toast(error.message); }
   }
   if (event.target.closest(".empty-add")) openModal();
+  const catalogAction = event.target.closest(".catalog-import-action");
+  if (catalogAction && state.catalogPreview) {
+    const row = catalogAction.closest(".catalog-preview-row");
+    const index = Number(row.dataset.importIndex);
+    catalogAction.disabled = true;
+    try {
+      await api("/api/catalog/import/apply", {
+        method: "POST",
+        body: JSON.stringify({
+          token: state.catalogPreview.token,
+          index,
+          action: catalogAction.dataset.action,
+          media_id: catalogAction.dataset.mediaId || null,
+        }),
+      });
+      const item = state.catalogPreview.items.find((value) => value.index === index);
+      if (item) item.handled = true;
+      renderCatalogPreview();
+      await Promise.all([loadDashboard(), loadSources()]);
+      toast("Import decision saved.");
+    } catch (error) { $("#catalogImportError").textContent = error.message; catalogAction.disabled = false; }
+  }
   const metadataButton = event.target.closest(".attach-metadata");
   if (metadataButton && state.quickItem) {
     metadataButton.disabled = true;
@@ -518,7 +616,7 @@ $("#deleteButton").addEventListener("click", async () => {
 let searchTimer;
 $("#searchInput").addEventListener("input", (event) => {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => { state.query = event.target.value.trim(); setView("collection"); }, 180);
+  searchTimer = setTimeout(() => { state.query = event.target.value.trim(); state.origin = ""; setView("collection"); }, 180);
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) { event.preventDefault(); $("#searchInput").focus(); }
@@ -527,12 +625,12 @@ document.addEventListener("keydown", (event) => {
   else if (event.key === "Escape" && !$("#quickView").hidden) closeQuickView();
 });
 
-$$("[data-view]").forEach((el) => el.addEventListener("click", () => setView(el.dataset.view, { type: "", status: "" })));
-$$(".type-link").forEach((el) => el.addEventListener("click", () => setView("collection", { type: el.dataset.type, status: "" })));
-$$(".status-link").forEach((el) => el.addEventListener("click", () => setView("collection", { type: "", status: el.dataset.status })));
-$$(".stat-card[data-stat-filter]").forEach((el) => el.addEventListener("click", () => setView("collection", { type: el.dataset.statFilter, status: "" })));
-$("#wishlistCard").addEventListener("click", () => setView("collection", { type: "", status: "Wishlist" }));
-$("#viewAll").addEventListener("click", () => setView("collection", { type: "", status: "" }));
+$$("[data-view]").forEach((el) => el.addEventListener("click", () => setView(el.dataset.view, { type: "", status: "", origin: "" })));
+$$(".type-link").forEach((el) => el.addEventListener("click", () => setView("collection", { type: el.dataset.type, status: "", origin: "" })));
+$$(".status-link").forEach((el) => el.addEventListener("click", () => setView("collection", { type: "", status: el.dataset.status, origin: "" })));
+$$(".stat-card[data-stat-filter]").forEach((el) => el.addEventListener("click", () => setView("collection", { type: el.dataset.statFilter, status: "", origin: "" })));
+$("#wishlistCard").addEventListener("click", () => setView("collection", { type: "", status: "Wishlist", origin: "" }));
+$("#viewAll").addEventListener("click", () => setView("collection", { type: "", status: "", origin: "" }));
 $("#typeFilter").addEventListener("change", (e) => { state.type = e.target.value; loadCollection(); });
 $("#statusFilter").addEventListener("change", (e) => { state.status = e.target.value; loadCollection(); });
 $("#clearFilters").addEventListener("click", () => { state.type = ""; state.status = ""; state.query = ""; $("#searchInput").value = ""; $("#typeFilter").value = ""; $("#statusFilter").value = ""; loadCollection(); });
@@ -689,6 +787,50 @@ $("#refreshLibraryAction").addEventListener("click", async () => {
   } catch (error) { toast(`Library refresh failed: ${error.message}`, 6000); }
   finally { button.disabled = false; button.innerHTML = original; }
 });
+$("#addSourceButton").addEventListener("click", () => {
+  $("#addSourceModal").hidden = false;
+  document.body.style.overflow = "hidden";
+});
+$("#closeAddSource").addEventListener("click", () => {
+  $("#addSourceModal").hidden = true; document.body.style.overflow = "";
+});
+$("#addSourceModal").addEventListener("click", (event) => {
+  if (event.target === $("#addSourceModal")) {
+    $("#addSourceModal").hidden = true; document.body.style.overflow = "";
+  }
+});
+$$("[data-source-choice]").forEach((button) => button.addEventListener("click", () => {
+  $("#addSourceModal").hidden = true;
+  document.body.style.overflow = "";
+  if (button.dataset.sourceChoice === "jellyfin") $("#jellyfinSourceSetup").scrollIntoView({ behavior: "smooth" });
+  if (button.dataset.sourceChoice === "import") openCatalogFilePicker();
+  if (button.dataset.sourceChoice === "manual") openModal();
+}));
+$("#importCatalogButton").addEventListener("click", openCatalogFilePicker);
+$$(".source-import-trigger").forEach((button) => button.addEventListener("click", openCatalogFilePicker));
+$("#catalogImportFile").addEventListener("change", (event) => {
+  const file = event.target.files[0];
+  if (file) previewCatalogFile(file).catch((error) => toast(error.message, 5000));
+});
+$("#exportCatalogButton").addEventListener("click", () => { window.location.href = "/api/catalog/export"; });
+$("#exportLocalCatalog").addEventListener("click", () => { window.location.href = "/api/catalog/export"; });
+$("#syncAllSourcesButton").addEventListener("click", () => $("#refreshLibraryAction").click());
+$("#sourceFullRefreshButton").addEventListener("click", () => $("#fullRefreshJellyfin").click());
+$("#viewLocalItems").addEventListener("click", () => setView("collection", { type: "", status: "", origin: "" }));
+$("#viewManualItems").addEventListener("click", () => setView("collection", { type: "", status: "", origin: "manual" }));
+$("#addManualItem").addEventListener("click", () => openModal());
+$("#sourceTestJellyfin").addEventListener("click", () => $("#testJellyfin").click());
+$("#sourceRefreshLibraries").addEventListener("click", () => $("#refreshJellyfinLibraries").click());
+$("#sourceSyncJellyfin").addEventListener("click", () => $("#syncJellyfinLibraries").click());
+$("#sourceImportPreview").addEventListener("click", () => $("#importJellyfin").click());
+$("#editJellyfinSource").addEventListener("click", () => $("#jellyfinSourceSetup").scrollIntoView({ behavior: "smooth" }));
+$("#closeCatalogImport").addEventListener("click", closeCatalogImport);
+$("#catalogImportModal").addEventListener("click", (event) => {
+  if (event.target === $("#catalogImportModal")) closeCatalogImport();
+});
+$$(".catalog-preview-tabs .preview-tab").forEach((tab) =>
+  tab.addEventListener("click", () => renderCatalogPreview(tab.dataset.catalogPreview))
+);
 $$(".settings-tab").forEach((button) =>
   button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab))
 );
