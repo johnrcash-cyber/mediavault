@@ -31,9 +31,10 @@
         <button class="nav-link status-link" data-status="Wishlist"><span>♡</span> Wishlist</button>
         <button class="nav-link status-link" data-status="Upgrade Candidate"><span>↗</span> Upgrades</button>
         <p class="nav-label">SYSTEM</p>
+        <button class="nav-link" id="refreshLibraryAction"><span>↻</span> Refresh Library</button>
         <button class="nav-link" data-view="settings"><span>⚙</span> Settings</button>
       </nav>
-      <div class="sidebar-foot"><span class="status-dot"></span><span><strong>Local library</strong><small>Stored securely on this device</small></span></div>
+      <div class="sidebar-foot"><span class="status-dot"></span><span><strong>Local library</strong><small>Stored securely on this device</small><em>Built by Arbiter Labs</em></span></div>
     </aside>
 
     <main>
@@ -152,7 +153,6 @@
             <div class="jellyfin-library-manager">
               <div class="library-manager-head">
                 <div><p class="eyebrow">LIBRARY SYNC</p><h3>Jellyfin Libraries</h3><p>Choose which libraries MediaVault should catalog and how they map.</p></div>
-                <label class="toggle-row"><input type="checkbox" id="jellyfinAutoSync"><span>Auto Sync Enabled</span></label>
               </div>
               <div id="jellyfinLibraryRows" class="jellyfin-library-rows">
                 <div class="library-empty">Test the connection, then refresh libraries.</div>
@@ -160,10 +160,18 @@
               <div class="library-manager-actions">
                 <button type="button" class="button secondary" id="refreshJellyfinLibraries">Refresh Libraries</button>
                 <button type="button" class="button primary" id="syncJellyfinLibraries">Sync Selected Libraries</button>
-                <span id="jellyfinLastSync">Last sync: Never</span>
               </div>
               <div id="jellyfinSyncStatus" class="sync-status" hidden></div>
             </div>
+            <div class="auto-sync-settings">
+              <div class="auto-sync-head"><div><p class="eyebrow">AUTOMATION</p><h3>Auto Sync</h3></div><label class="toggle-row"><input type="checkbox" id="jellyfinAutoSync"><span>Enabled</span></label></div>
+              <label><span>Frequency</span><select id="jellyfinSyncFrequency"><option value="startup">On startup</option><option value="hourly">Every 1 hour</option><option value="six_hours">Every 6 hours</option><option value="daily">Daily</option><option value="manual">Manual only</option></select></label>
+              <div class="last-sync-summary"><strong id="jellyfinLastSync">Last sync: Never</strong><span id="jellyfinLastResult">No sync results yet.</span></div>
+            </div>
+            <details class="advanced-sync">
+              <summary>Advanced / manual actions <span>＋</span></summary>
+              <div><p>Full Refresh rediscovers libraries, syncs selected sources, and refreshes missing metadata. Collector records are never overwritten or deleted.</p><button type="button" class="button danger" id="fullRefreshJellyfin">Run Full Refresh</button></div>
+            </details>
           </div>
           <div id="importPreview" class="import-preview" data-settings-section="jellyfin" hidden>
             <div class="section-head"><div><h2>Import preview</h2><p>Review every Jellyfin movie before changing your catalog.</p></div><span id="previewCount" class="date-chip"></span></div>

@@ -4,6 +4,7 @@ import os
 import sqlite3
 import json
 import re
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -302,6 +303,28 @@ def auto_sync_enabled() -> bool:
     return bool(row and row["value"] == "1")
 
 
+def auto_sync_frequency() -> str:
+    row = db().execute(
+        "SELECT value FROM app_settings "
+        "WHERE key = 'jellyfin_auto_sync_frequency'"
+    ).fetchone()
+    value = row["value"] if row else "manual"
+    return value if value in ("startup", "hourly", "six_hours", "daily", "manual") else "manual"
+
+
+def last_sync_summary() -> dict | None:
+    row = db().execute(
+        "SELECT value FROM app_settings "
+        "WHERE key = 'jellyfin_last_sync_summary'"
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row["value"])
+    except json.JSONDecodeError:
+        return None
+
+
 def library_to_dict(row: sqlite3.Row) -> dict:
     item = dict(row)
     item["enabled"] = bool(item["enabled"])
@@ -380,7 +403,10 @@ def sync_jellyfin_libraries() -> dict:
         """,
         (server_url,),
     ).fetchall()
-    result = {"processed": 0, "created": 0, "attached": 0, "failed": 0, "libraries": []}
+    result = {
+        "processed": 0, "added": 0, "updated": 0,
+        "skipped": 0, "failed": 0, "libraries": [],
+    }
     now = datetime.now(timezone.utc).isoformat()
     for library in libraries:
         mapping = JELLYFIN_LIBRARY_MAP.get(library["collection_type"])
@@ -390,7 +416,8 @@ def sync_jellyfin_libraries() -> dict:
         include_type = mapping[1]
         library_result = {
             "id": library["library_id"], "name": library["name"],
-            "category": category, "created": 0, "attached": 0, "failed": 0,
+            "category": category, "added": 0, "updated": 0,
+            "skipped": 0, "failed": 0,
         }
         try:
             response = jellyfin_request(
@@ -410,11 +437,58 @@ def sync_jellyfin_libraries() -> dict:
                 if not source["jellyfin_item_id"]:
                     continue
                 existing_source = db().execute(
-                    "SELECT media_id FROM jellyfin_sources "
+                    "SELECT * FROM jellyfin_sources "
                     "WHERE server_url = ? AND jellyfin_item_id = ?",
                     (server_url, source["jellyfin_item_id"]),
                 ).fetchone()
                 if existing_source:
+                    source_json = json.dumps(source, separators=(",", ":"))
+                    changed = (
+                        existing_source["source_title"] != source["title"]
+                        or existing_source["source_year"] != source["year"]
+                        or existing_source["jellyfin_library_id"] != library["library_id"]
+                        or existing_source["jellyfin_library_name"] != library["name"]
+                        or existing_source["metadata_json"] != source_json
+                    )
+                    if changed:
+                        db().execute(
+                            """
+                            UPDATE jellyfin_sources
+                            SET jellyfin_library_id = ?, jellyfin_library_name = ?,
+                                source_title = ?, source_year = ?, metadata_json = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                library["library_id"], library["name"],
+                                source["title"], source["year"], source_json,
+                                existing_source["id"],
+                            ),
+                        )
+                        result["updated"] += 1
+                        library_result["updated"] += 1
+                    else:
+                        result["skipped"] += 1
+                        library_result["skipped"] += 1
+                    media_id = existing_source["media_id"]
+                    if media_id and category in ("Movies", "Music"):
+                        attachment = db().execute(
+                            "SELECT metadata_json FROM metadata_attachments "
+                            "WHERE media_id = ?",
+                            (media_id,),
+                        ).fetchone()
+                        needs_metadata = not attachment
+                        if attachment:
+                            try:
+                                needs_metadata = not json.loads(
+                                    attachment["metadata_json"] or "{}"
+                                ).get("poster_url")
+                            except json.JSONDecodeError:
+                                needs_metadata = True
+                        if needs_metadata:
+                            try:
+                                enrich_media_item(media_id)
+                            except (ValueError, LookupError, sqlite3.Error):
+                                pass
                     continue
                 candidates = db().execute(
                     "SELECT id, title, year FROM media WHERE media_type = ?",
@@ -453,11 +527,11 @@ def sync_jellyfin_libraries() -> dict:
                     )
                     media_id = cursor.lastrowid
                     action = "created"
-                    result["created"] += 1
-                    library_result["created"] += 1
+                    result["added"] += 1
+                    library_result["added"] += 1
                 else:
-                    result["attached"] += 1
-                    library_result["attached"] += 1
+                    result["updated"] += 1
+                    library_result["updated"] += 1
                 db().execute(
                     """
                     INSERT INTO jellyfin_sources (
@@ -474,6 +548,11 @@ def sync_jellyfin_libraries() -> dict:
                         json.dumps(source, separators=(",", ":")), now,
                     ),
                 )
+                if category in ("Movies", "Music"):
+                    try:
+                        enrich_media_item(media_id)
+                    except (ValueError, LookupError, sqlite3.Error):
+                        pass
             total = db().execute(
                 "SELECT COUNT(*) FROM jellyfin_sources "
                 "WHERE server_url = ? AND jellyfin_library_id = ? "
@@ -494,6 +573,12 @@ def sync_jellyfin_libraries() -> dict:
             library_result["error"] = str(exc)
         result["libraries"].append(library_result)
     result["last_sync"] = now
+    db().execute(
+        "INSERT INTO app_settings(key, value) VALUES('jellyfin_last_sync_summary', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (json.dumps(result, separators=(",", ":")),),
+    )
+    db().commit()
     return result
 
 
@@ -1935,7 +2020,8 @@ def get_jellyfin_libraries():
     if not settings["server_url"]:
         return jsonify({
             "libraries": [], "auto_sync": auto_sync_enabled(),
-            "last_sync": None,
+            "frequency": auto_sync_frequency(), "last_sync": None,
+            "last_result": last_sync_summary(),
         })
     rows = db().execute(
         "SELECT * FROM jellyfin_libraries WHERE server_url = ? ORDER BY name",
@@ -1948,7 +2034,9 @@ def get_jellyfin_libraries():
     return jsonify({
         "libraries": [library_to_dict(row) for row in rows],
         "auto_sync": auto_sync_enabled(),
+        "frequency": auto_sync_frequency(),
         "last_sync": last_sync,
+        "last_result": last_sync_summary(),
     })
 
 
@@ -2003,6 +2091,15 @@ def update_jellyfin_libraries():
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         ("1" if payload.get("auto_sync") else "0",),
     )
+    frequency = str(payload.get("frequency", "manual"))
+    if frequency not in ("startup", "hourly", "six_hours", "daily", "manual"):
+        frequency = "manual"
+    db().execute(
+        "INSERT INTO app_settings(key, value) "
+        "VALUES('jellyfin_auto_sync_frequency', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (frequency,),
+    )
     db().commit()
     return jsonify({"saved": True})
 
@@ -2011,6 +2108,21 @@ def update_jellyfin_libraries():
 def sync_selected_jellyfin_libraries():
     try:
         return jsonify(sync_jellyfin_libraries())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/jellyfin/full-refresh")
+def full_refresh_jellyfin():
+    try:
+        discover_jellyfin_libraries()
+        sync_result = sync_jellyfin_libraries()
+        metadata_result = refresh_all_metadata().get_json()
+        return jsonify({
+            "sync": sync_result,
+            "metadata": metadata_result,
+            "last_sync": sync_result["last_sync"],
+        })
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -2119,6 +2231,52 @@ def jellyfin_import_action():
         db().rollback()
         return jsonify({"error": "This Jellyfin item has already been handled."}), 409
     return jsonify({"action": stored_action, "media_id": media_id})
+
+
+_auto_sync_lock = threading.Lock()
+_startup_sync_scheduled = False
+
+
+def run_scheduled_sync() -> None:
+    if not _auto_sync_lock.acquire(blocking=False):
+        return
+    try:
+        with app.app_context():
+            sync_jellyfin_libraries()
+    except Exception:
+        app.logger.exception("Scheduled Jellyfin sync failed")
+    finally:
+        _auto_sync_lock.release()
+
+
+@app.before_request
+def schedule_auto_sync_if_due():
+    global _startup_sync_scheduled
+    if request.path.startswith("/static/") or not auto_sync_enabled():
+        return None
+    frequency = auto_sync_frequency()
+    if frequency == "manual":
+        return None
+    summary = last_sync_summary()
+    last_sync = None
+    if summary and summary.get("last_sync"):
+        try:
+            last_sync = datetime.fromisoformat(summary["last_sync"])
+        except (TypeError, ValueError):
+            pass
+    now = datetime.now(timezone.utc)
+    intervals = {"hourly": 3600, "six_hours": 21600, "daily": 86400}
+    due = False
+    if frequency == "startup":
+        due = not _startup_sync_scheduled
+        _startup_sync_scheduled = True
+    elif not last_sync:
+        due = True
+    else:
+        due = (now - last_sync).total_seconds() >= intervals.get(frequency, 86400)
+    if due and not _auto_sync_lock.locked():
+        threading.Thread(target=run_scheduled_sync, daemon=True).start()
+    return None
 
 
 init_db()

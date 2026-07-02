@@ -103,3 +103,14 @@ Movie, series, album, book, and game records are created only when no matching
 catalog item exists. Exact matches receive a Jellyfin source attachment without
 changing collector fields. Imported albums are Music records and can then be
 enriched through MusicBrainz, Discogs, Cover Art Archive, or Last.fm.
+
+The sidebar **Refresh Library** action runs incremental sync without navigating
+away from the current view. It reports processed, added, updated, skipped, and
+failed items. Incremental sync refreshes Jellyfin source snapshots and fills
+missing provider metadata/artwork, but never overwrites collector data or
+deletes MediaVault records.
+
+Auto Sync configuration lives under Jellyfin Settings with startup, hourly,
+six-hour, daily, and manual-only frequencies. The most recent timestamp and
+result summary are persisted. A confirmed Full Refresh is available under
+Advanced actions for library rediscovery plus metadata refresh.

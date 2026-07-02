@@ -143,8 +143,13 @@ async function loadJellyfinLibraries() {
   try {
     const data = await api("/api/jellyfin/libraries");
     $("#jellyfinAutoSync").checked = Boolean(data.auto_sync);
+    $("#jellyfinSyncFrequency").value = data.frequency || "manual";
+    $("#jellyfinSyncFrequency").disabled = !data.auto_sync;
     renderJellyfinLibraries(data.libraries || []);
     $("#jellyfinLastSync").textContent = `Last sync: ${data.last_sync ? new Date(data.last_sync).toLocaleString() : "Never"}`;
+    $("#jellyfinLastResult").textContent = data.last_result
+      ? `${data.last_result.processed || 0} processed · ${data.last_result.added || 0} added · ${data.last_result.updated || 0} updated · ${data.last_result.skipped || 0} skipped · ${data.last_result.failed || 0} failed`
+      : "No sync results yet.";
   } catch (error) { $("#jellyfinError").textContent = error.message; }
 }
 
@@ -172,7 +177,11 @@ async function saveJellyfinLibraryConfig() {
   }));
   await api("/api/jellyfin/libraries", {
     method: "PUT",
-    body: JSON.stringify({ libraries: selections, auto_sync: $("#jellyfinAutoSync").checked }),
+    body: JSON.stringify({
+      libraries: selections,
+      auto_sync: $("#jellyfinAutoSync").checked,
+      frequency: $("#jellyfinSyncFrequency").value,
+    }),
   });
 }
 
@@ -180,9 +189,10 @@ function renderJellyfinSyncStatus(result) {
   const libraryLines = (result.libraries || []).map((library) =>
     `<div><strong>${escapeHtml(library.name)}</strong><span>${library.imported_count || 0} imported${library.failed ? ` · ${library.failed} failed` : ""}</span></div>`
   ).join("");
-  $("#jellyfinSyncStatus").innerHTML = `<p><strong>Sync complete</strong><span>${result.created} created · ${result.attached} attached · ${result.failed} failed</span></p>${libraryLines}`;
+  $("#jellyfinSyncStatus").innerHTML = `<p><strong>Sync complete</strong><span>${result.processed || 0} processed · ${result.added || 0} added · ${result.updated || 0} updated · ${result.skipped || 0} skipped · ${result.failed || 0} failed</span></p>${libraryLines}`;
   $("#jellyfinSyncStatus").hidden = false;
   $("#jellyfinLastSync").textContent = `Last sync: ${new Date(result.last_sync).toLocaleString()}`;
+  $("#jellyfinLastResult").textContent = `${result.processed || 0} processed · ${result.added || 0} added · ${result.updated || 0} updated · ${result.skipped || 0} skipped · ${result.failed || 0} failed`;
 }
 
 function jellyfinFormData() {
@@ -393,10 +403,10 @@ function closeModal() {
   document.body.style.overflow = "";
 }
 
-function toast(message) {
+function toast(message, duration = 2200) {
   $("#toast").textContent = message;
   $("#toast").classList.add("show");
-  setTimeout(() => $("#toast").classList.remove("show"), 2200);
+  setTimeout(() => $("#toast").classList.remove("show"), duration);
 }
 
 document.addEventListener("click", async (event) => {
@@ -639,6 +649,20 @@ $("#viewFailedItems").addEventListener("click", () => {
   $("#viewFailedItems").textContent = $("#failedItems").hidden ? "View failed items" : "Hide failed items";
 });
 $("#menuButton").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
+$("#refreshLibraryAction").addEventListener("click", async () => {
+  const button = $("#refreshLibraryAction");
+  const original = button.innerHTML;
+  button.disabled = true;
+  button.innerHTML = "<span>↻</span> Refreshing…";
+  try {
+    const result = await api("/api/jellyfin/sync", { method: "POST", body: "{}" });
+    toast(`${result.processed || 0} processed · ${result.added || 0} added · ${result.updated || 0} updated · ${result.skipped || 0} skipped · ${result.failed || 0} failed`, 6000);
+    await loadDashboard();
+    if (state.view === "collection") await loadCollection();
+    if (state.view === "settings") await loadJellyfinLibraries();
+  } catch (error) { toast(`Library refresh failed: ${error.message}`, 6000); }
+  finally { button.disabled = false; button.innerHTML = original; }
+});
 $$(".settings-tab").forEach((button) =>
   button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab))
 );
@@ -704,7 +728,25 @@ $("#syncJellyfinLibraries").addEventListener("click", async () => {
   finally { $("#syncJellyfinLibraries").disabled = false; $("#syncJellyfinLibraries").textContent = "Sync Selected Libraries"; }
 });
 $("#jellyfinAutoSync").addEventListener("change", () => {
+  $("#jellyfinSyncFrequency").disabled = !$("#jellyfinAutoSync").checked;
   saveJellyfinLibraryConfig().catch((error) => { $("#jellyfinError").textContent = error.message; });
+});
+$("#jellyfinSyncFrequency").addEventListener("change", () => {
+  saveJellyfinLibraryConfig().catch((error) => { $("#jellyfinError").textContent = error.message; });
+});
+$("#fullRefreshJellyfin").addEventListener("click", async () => {
+  if (!confirm("Run a full Jellyfin and metadata refresh? This can make many provider requests, but will not overwrite or delete collector records.")) return;
+  $("#fullRefreshJellyfin").disabled = true;
+  $("#fullRefreshJellyfin").textContent = "Running Full Refresh…";
+  try {
+    await saveJellyfinLibraryConfig();
+    const result = await api("/api/jellyfin/full-refresh", { method: "POST", body: "{}" });
+    renderJellyfinSyncStatus(result.sync);
+    toast(`Full refresh complete · ${result.sync.added || 0} added · ${result.sync.updated || 0} updated · ${result.sync.failed || 0} failed`);
+    await Promise.all([loadJellyfinLibraries(), loadDashboard()]);
+    if (state.view === "collection") await loadCollection();
+  } catch (error) { $("#jellyfinError").textContent = error.message; }
+  finally { $("#fullRefreshJellyfin").disabled = false; $("#fullRefreshJellyfin").textContent = "Run Full Refresh"; }
 });
 $$(".preview-tab").forEach((tab) => tab.addEventListener("click", () => renderPreview(tab.dataset.preview)));
 $("#today").textContent = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(new Date()).toUpperCase();
