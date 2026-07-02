@@ -17,6 +17,43 @@ Then open `http://127.0.0.1:5050`. Set `PORT` if you prefer another port.
 
 Collection data is stored in `data/mediavault.db`. Set `MEDIAVAULT_DATABASE` to use a different SQLite file.
 
+## Local HTTPS
+
+MediaVault can bind to the home network over HTTPS for mobile browser features
+such as future camera-based UPC scanning.
+
+Generate a local self-signed certificate from the MediaVault directory:
+
+```powershell
+openssl req -x509 -newkey rsa:4096 -nodes -out cert.pem -keyout key.pem -days 365
+```
+
+Start HTTPS mode:
+
+```powershell
+python app.py --https
+```
+
+Flask binds to `0.0.0.0` on port `5050`. Open MediaVault from another device at:
+
+```text
+https://LOCAL-IP:5050
+```
+
+Your browser will warn that the certificate is self-signed. Accept that warning
+only for your own trusted local MediaVault server. This mode is for development
+and private home networks; it is not production TLS security. Keep `cert.pem`
+and especially `key.pem` private. Both files, plus `*.crt` and `*.key`, are
+excluded from Git.
+
+Normal HTTP mode remains available:
+
+```powershell
+python app.py
+```
+
+Open it locally at `http://127.0.0.1:5050`.
+
 ## Phase 1 features
 
 - Dashboard counts and recently added items

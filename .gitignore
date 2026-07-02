@@ -3,3 +3,7 @@ __pycache__/
 .venv/
 data/
 mediavault.db*
+cert.pem
+key.pem
+*.crt
+*.key

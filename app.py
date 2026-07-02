@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import os
 import sqlite3
 import json
@@ -2455,9 +2456,61 @@ if os.environ.get("MEDIAVAULT_DISABLE_STARTUP_CHECKS") != "1":
         daemon=True,
     ).start()
 
-if __name__ == "__main__":
-    app.run(
-        debug=True,
-        use_reloader=False,
-        port=int(os.environ.get("PORT", "5050")),
+def parse_run_args(args: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the MediaVault web server.")
+    parser.add_argument(
+        "--https",
+        action="store_true",
+        help="Serve MediaVault over HTTPS using local cert.pem and key.pem files.",
     )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("HOST", "0.0.0.0"),
+        help="Interface to bind (default: 0.0.0.0).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PORT", "5050")),
+        help="Port to bind (default: 5050).",
+    )
+    return parser.parse_args(args)
+
+
+def run_configuration(args: argparse.Namespace) -> dict:
+    configuration = {
+        "host": args.host,
+        "port": args.port,
+        "debug": True,
+        "use_reloader": False,
+        "ssl_context": None,
+    }
+    if args.https:
+        certificate = BASE_DIR / "cert.pem"
+        private_key = BASE_DIR / "key.pem"
+        missing = [
+            path.name for path in (certificate, private_key) if not path.is_file()
+        ]
+        if missing:
+            raise FileNotFoundError(
+                "HTTPS requires cert.pem and key.pem in the MediaVault folder. "
+                f"Missing: {', '.join(missing)}"
+            )
+        configuration["ssl_context"] = (str(certificate), str(private_key))
+    return configuration
+
+
+if __name__ == "__main__":
+    run_args = parse_run_args()
+    try:
+        server_config = run_configuration(run_args)
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from exc
+    scheme = "https" if run_args.https else "http"
+    print(f"MediaVault local server: {scheme}://127.0.0.1:{run_args.port}")
+    if run_args.https:
+        print(
+            "Local HTTPS mode uses a self-signed certificate and is not "
+            "production security."
+        )
+    app.run(**server_config)
