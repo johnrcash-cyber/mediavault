@@ -40,3 +40,4 @@
 .source-model-card{background:#101115;border-radius:7px;padding:14px;min-height:0}
 .source-model-card>p{margin:10px 0}.source-card-stats,.source-card-details{margin:6px 0 10px}
 .danger-text{color:#d77b6d!important}
+.external-source-cards{display:contents}.sources-empty-state{border:1px dashed #34363d;background:#101115;border-radius:7px;padding:24px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;min-height:150px}.sources-empty-state strong{font:700 13px Manrope}.sources-empty-state span{font-size:10px;color:#777980;margin:6px 0 15px}.sources-empty-state .button{font-size:9px;padding:8px 11px}.source-state.disabled{background:#302b22;border-color:#4b412e;color:#c4a463}.source-state.imported{background:#1c2d36;border-color:#2c4652;color:#7db9d0}

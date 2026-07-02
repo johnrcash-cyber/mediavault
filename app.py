@@ -702,10 +702,6 @@ SOURCE_NAMES = ("Jellyfin", "OMDb", "TMDB", "MusicBrainz", "Discogs", "Last.fm")
 def source_health_configuration() -> dict[str, dict | None]:
     providers = provider_settings()
     jellyfin = jellyfin_settings()
-    disabled_row = connection.execute(
-        "SELECT value FROM app_settings WHERE key = 'jellyfin_source_disabled'"
-    ).fetchone()
-    jellyfin_disabled = bool(disabled_row and disabled_row["value"] == "1")
     configurations: dict[str, dict | None] = {
         "Jellyfin": None,
         "OMDb": None,
@@ -1880,6 +1876,10 @@ def source_summary():
         """
     ).fetchone()[0]
     jellyfin = jellyfin_settings()
+    disabled_row = connection.execute(
+        "SELECT value FROM app_settings WHERE key = 'jellyfin_source_disabled'"
+    ).fetchone()
+    jellyfin_disabled = bool(disabled_row and disabled_row["value"] == "1")
     health = connection.execute(
         "SELECT status FROM source_status WHERE source_name = 'Jellyfin'"
     ).fetchone()
@@ -1894,6 +1894,39 @@ def source_summary():
     last_import = connection.execute(
         "SELECT * FROM catalog_imports ORDER BY created_at DESC LIMIT 1"
     ).fetchone()
+    instances = []
+    if jellyfin["server_url"] and jellyfin["api_key"]:
+        instances.append({
+            "id": "default",
+            "type": "jellyfin",
+            "type_label": "Jellyfin",
+            "name": jellyfin["server_name"] or "Jellyfin",
+            "status": "Disabled" if jellyfin_disabled else (
+                health["status"] if health else "Configured"
+            ),
+            "details": {
+                "server_url": jellyfin["server_url"],
+                "libraries": libraries["enabled"] or 0,
+                "last_sync": last_sync,
+                "frequency": auto_sync_frequency(),
+            },
+        })
+    import_instances = connection.execute(
+        "SELECT id, filename, item_count, created_at FROM catalog_imports "
+        "ORDER BY created_at DESC"
+    ).fetchall()
+    for source_import in import_instances:
+        instances.append({
+            "id": str(source_import["id"]),
+            "type": "json_import",
+            "type_label": "JSON Import",
+            "name": source_import["filename"],
+            "status": "Imported",
+            "details": {
+                "items": source_import["item_count"],
+                "last_import": source_import["created_at"],
+            },
+        })
     return jsonify({
         "local": {"items": total, "status": "Active"},
         "manual": {"items": manual_count, "status": "Active"},
@@ -1917,6 +1950,7 @@ def source_summary():
             "last_import": dict(last_import) if last_import else None,
             "formats": ["JSON", "CSV (coming later)"],
         },
+        "instances": instances,
     })
 
 
@@ -2673,6 +2707,41 @@ def enable_jellyfin_source():
     )
     db().commit()
     return jsonify({"enabled": True})
+
+
+@app.delete("/api/sources/<source_type>/<source_id>")
+def delete_source_instance(source_type: str, source_id: str):
+    if source_type == "jellyfin" and source_id == "default":
+        db().execute("DELETE FROM jellyfin_sources")
+        db().execute("DELETE FROM jellyfin_libraries")
+        db().execute(
+            "DELETE FROM app_settings WHERE key IN ("
+            "'jellyfin_server_url', 'jellyfin_api_key', 'jellyfin_server_name', "
+            "'jellyfin_auto_sync', 'jellyfin_auto_sync_frequency', "
+            "'jellyfin_last_sync_summary', 'jellyfin_source_disabled')"
+        )
+        db().execute(
+            "DELETE FROM source_status WHERE source_name = 'Jellyfin'"
+        )
+        db().commit()
+        return jsonify({"deleted": True})
+    if source_type == "json_import" and source_id.isdigit():
+        import_id = int(source_id)
+        if not db().execute(
+            "SELECT 1 FROM catalog_imports WHERE id = ?", (import_id,)
+        ).fetchone():
+            return jsonify({"error": "Source instance not found."}), 404
+        db().execute(
+            "DELETE FROM catalog_import_links WHERE import_id = ?", (import_id,)
+        )
+        db().execute(
+            "UPDATE import_previews SET import_id = NULL WHERE import_id = ?",
+            (import_id,),
+        )
+        db().execute("DELETE FROM catalog_imports WHERE id = ?", (import_id,))
+        db().commit()
+        return jsonify({"deleted": True})
+    return jsonify({"error": "Source instance not found."}), 404
 
 
 @app.post("/api/jellyfin/import-preview")

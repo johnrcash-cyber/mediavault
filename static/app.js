@@ -96,17 +96,35 @@ async function loadSources() {
   try {
     const data = await api("/api/sources");
     $("#localSourceCount").textContent = data.local.items;
-    $("#manualSourceCount").textContent = data.manual.items;
-    $("#catalogImportCount").textContent = data.catalog_import.items;
-    $("#jellyfinSourceState").textContent = data.jellyfin.status;
-    $("#jellyfinSourceState").className = `source-state ${data.jellyfin.status.toLowerCase().replaceAll(" ", "-")}`;
-    $("#jellyfinSourceServer").textContent = data.jellyfin.server_name || data.jellyfin.server_url || "No server configured";
-    $("#jellyfinSourceDescription").textContent = data.jellyfin.server_url
-      ? data.jellyfin.server_url
-      : "Connect Jellyfin libraries as external catalog sources.";
-    $("#jellyfinSourceLibraries").textContent = `${data.jellyfin.enabled_libraries} of ${data.jellyfin.library_count} libraries enabled`;
-    $("#jellyfinSourceLastSync").textContent = `Last sync: ${data.jellyfin.last_sync ? new Date(data.jellyfin.last_sync).toLocaleString() : "Never"}`;
+    renderExternalSourceCards(data.instances || []);
   } catch (error) { toast(error.message); }
+}
+
+function renderExternalSourceCards(instances) {
+  if (!instances.length) {
+    $("#externalSourceCards").innerHTML = `<div class="sources-empty-state">
+      <strong>No external sources connected.</strong>
+      <span>Connect Jellyfin or add an import source when you are ready.</span>
+      <button class="button primary" data-source-action="add">＋ Add Source</button>
+    </div>`;
+    return;
+  }
+  $("#externalSourceCards").innerHTML = instances.map((source) => {
+    const jellyfin = source.type === "jellyfin";
+    const details = source.details || {};
+    const icon = jellyfin ? "J" : "⇩";
+    const detailLines = jellyfin
+      ? `<span>Libraries: ${details.libraries || 0}</span><span>Last sync: ${details.last_sync ? new Date(details.last_sync).toLocaleString() : "Never"}</span>`
+      : `<span>Items: ${details.items || 0}</span><span>Imported: ${details.last_import ? new Date(details.last_import).toLocaleString() : "Unknown"}</span>`;
+    return `<article class="source-model-card external-instance" data-source-type="${escapeHtml(source.type)}" data-source-id="${escapeHtml(source.id)}">
+      <div class="source-card-head"><span class="source-card-icon ${jellyfin ? "jellyfin" : "import"}">${icon}</span><div><h3>${escapeHtml(source.name)}</h3><small>TYPE: ${escapeHtml(source.type_label)}</small></div><span class="source-state ${source.status.toLowerCase().replaceAll(" ", "-")}">${escapeHtml(source.status)}</span></div>
+      <div class="source-card-details">${detailLines}</div>
+      <div class="source-card-actions">
+        ${jellyfin ? '<button class="text-button" data-source-action="configure">Configure</button><button class="text-button" data-source-action="sync">Sync</button><button class="text-button" data-source-action="disable">Disable</button>' : '<button class="text-button" data-source-action="view">View</button>'}
+        <button class="text-button danger-text" data-source-action="delete">Delete</button>
+      </div>
+    </article>`;
+  }).join("");
 }
 
 async function loadSourceStatus() {
@@ -512,6 +530,39 @@ function toast(message, duration = 2200) {
 }
 
 document.addEventListener("click", async (event) => {
+  const sourceInstanceAction = event.target.closest("[data-source-action]");
+  if (sourceInstanceAction) {
+    const action = sourceInstanceAction.dataset.sourceAction;
+    const sourceCard = sourceInstanceAction.closest("[data-source-type]");
+    if (action === "add") {
+      $("#addSourceButton").click();
+      return;
+    }
+    if (!sourceCard) return;
+    const sourceType = sourceCard.dataset.sourceType;
+    const sourceId = sourceCard.dataset.sourceId;
+    if (action === "configure") {
+      toast("Jellyfin configuration will open in a source setup screen.");
+    } else if (action === "sync") {
+      $("#refreshLibraryAction").click();
+    } else if (action === "disable") {
+      try {
+        await api("/api/sources/jellyfin/disable", { method: "POST", body: "{}" });
+        toast("Jellyfin source disabled.");
+        await loadSources();
+      } catch (error) { toast(error.message, 5000); }
+    } else if (action === "view") {
+      setView("collection", { type: "", status: "", origin: "" });
+    } else if (action === "delete") {
+      if (!confirm("Delete this source connection? MediaVault catalog records will be kept.")) return;
+      try {
+        await api(`/api/sources/${sourceType}/${sourceId}`, { method: "DELETE" });
+        toast("Source removed. Catalog records were kept.");
+        await loadSources();
+      } catch (error) { toast(error.message, 5000); }
+    }
+    return;
+  }
   const mediaCard = event.target.closest(".media-card");
   if (mediaCard) {
     try { await openQuickView(mediaCard.dataset.id); } catch (error) { toast(error.message); }
@@ -807,8 +858,10 @@ $$("[data-source-choice]").forEach((button) => button.addEventListener("click", 
       .then(() => { toast("Jellyfin source enabled."); loadSources(); })
       .catch((error) => toast(error.message, 5000));
   }
-  if (button.dataset.sourceChoice === "import") openCatalogFilePicker();
-  if (button.dataset.sourceChoice === "manual") openModal();
+  if (button.dataset.sourceChoice === "json") openCatalogFilePicker();
+  if (!["jellyfin", "json"].includes(button.dataset.sourceChoice)) {
+    toast(`${button.querySelector("strong").textContent} setup is coming next.`);
+  }
 }));
 $("#importCatalogButton").addEventListener("click", openCatalogFilePicker);
 $$(".source-import-trigger").forEach((button) => button.addEventListener("click", openCatalogFilePicker));
@@ -828,30 +881,6 @@ $("#sourceFullRefreshButton").addEventListener("click", async () => {
   } catch (error) { toast(error.message, 6000); }
 });
 $("#viewLocalItems").addEventListener("click", () => setView("collection", { type: "", status: "", origin: "" }));
-$("#viewManualItems").addEventListener("click", () => setView("collection", { type: "", status: "", origin: "manual" }));
-$("#addManualItem").addEventListener("click", () => openModal());
-$("#configureJellyfinSource").addEventListener("click", async () => {
-  try {
-    await api("/api/sources/jellyfin/enable", { method: "POST", body: "{}" });
-    toast("Jellyfin source enabled.");
-    await loadSources();
-  } catch (error) { toast(error.message, 5000); }
-});
-$("#sourceRefreshLibraries").addEventListener("click", async () => {
-  try {
-    await api("/api/jellyfin/libraries/refresh", { method: "POST", body: "{}" });
-    toast("Jellyfin libraries refreshed.");
-    await loadSources();
-  } catch (error) { toast(error.message, 5000); }
-});
-$("#sourceSyncJellyfin").addEventListener("click", () => $("#refreshLibraryAction").click());
-$("#disableJellyfinSource").addEventListener("click", async () => {
-  try {
-    await api("/api/sources/jellyfin/disable", { method: "POST", body: "{}" });
-    toast("Jellyfin source disabled.");
-    await loadSources();
-  } catch (error) { toast(error.message, 5000); }
-});
 $("#closeCatalogImport").addEventListener("click", closeCatalogImport);
 $("#catalogImportModal").addEventListener("click", (event) => {
   if (event.target === $("#catalogImportModal")) closeCatalogImport();

@@ -150,26 +150,8 @@
                 <div class="source-card-stats"><span><small>ITEMS</small><strong id="localSourceCount">0</strong></span><span><small>ROLE</small><strong>Master catalog</strong></span></div>
                 <div class="source-card-actions"><button class="text-button" id="viewLocalItems">View</button><button class="text-button" id="exportLocalCatalog">Export</button></div>
               </article>
-              <article class="source-model-card">
-                <div class="source-card-head"><span class="source-card-icon jellyfin">J</span><div><h3>Jellyfin</h3><small>DIRECT CONNECTION</small></div><span class="source-state" id="jellyfinSourceState">Not Configured</span></div>
-                <p id="jellyfinSourceDescription">Connect Jellyfin libraries as external catalog sources.</p>
-                <div class="source-card-details"><span id="jellyfinSourceServer">No server configured</span><span id="jellyfinSourceLibraries">0 enabled libraries</span><span id="jellyfinSourceLastSync">Last sync: Never</span></div>
-                <div class="source-card-actions"><button class="text-button" id="configureJellyfinSource">Configure</button><button class="text-button" id="sourceSyncJellyfin">Sync Now</button><button class="text-button" id="sourceRefreshLibraries">Refresh Libraries</button><button class="text-button danger-text" id="disableJellyfinSource">Disable</button></div>
-              </article>
-              <article class="source-model-card">
-                <div class="source-card-head"><span class="source-card-icon import">⇩</span><div><h3>Catalog Import</h3><small>FILE IMPORT</small></div><span class="source-state online">Available</span></div>
-                <p>Preview JSON catalog files, match existing records, and explicitly create, attach, or ignore items.</p>
-                <div class="source-card-stats"><span><small>IMPORTED ITEMS</small><strong id="catalogImportCount">0</strong></span><span><small>FORMATS</small><strong>JSON</strong></span></div>
-                <div class="source-card-actions"><button class="text-button source-import-trigger">Import Catalog</button></div>
-              </article>
-              <article class="source-model-card">
-                <div class="source-card-head"><span class="source-card-icon manual">＋</span><div><h3>Manual Entry</h3><small>INTERNAL</small></div><span class="source-state online">Active</span></div>
-                <p>Items created directly with Add Media and managed entirely by MediaVault.</p>
-                <div class="source-card-stats"><span><small>MANUAL ITEMS</small><strong id="manualSourceCount">0</strong></span><span><small>SETUP</small><strong>None required</strong></span></div>
-                <div class="source-card-actions"><button class="text-button" id="viewManualItems">View Manual Items</button><button class="text-button" id="addManualItem">Add Media</button></div>
-              </article>
+              <div id="externalSourceCards" class="external-source-cards"></div>
             </div>
-            <div class="future-sources"><span>Future sources</span><b>Plex</b><b>Steam</b><b>OpenLibrary</b><b>CSV / JSON uploads</b></div>
           </section>
         </section>
       </div>
@@ -181,8 +163,13 @@
       <div class="modal-head"><div><p class="eyebrow">CATALOG SOURCE</p><h2 id="addSourceTitle">Add Source</h2></div><button class="icon-button" id="closeAddSource" aria-label="Close">×</button></div>
       <div class="source-picker">
         <button data-source-choice="jellyfin"><span class="source-card-icon jellyfin">J</span><strong>Jellyfin Direct Connection</strong><small>Connect a server and choose libraries.</small></button>
-        <button data-source-choice="import"><span class="source-card-icon import">⇩</span><strong>Catalog Import</strong><small>Upload and preview a MediaVault JSON catalog.</small></button>
-        <button data-source-choice="manual"><span class="source-card-icon manual">＋</span><strong>Manual Entry / Local Database</strong><small>No setup required. Add an item directly.</small></button>
+        <button data-source-choice="plex"><span class="source-card-icon">P</span><strong>Plex</strong><small>Direct media server connection.</small></button>
+        <button data-source-choice="csv"><span class="source-card-icon import">CSV</span><strong>CSV Import</strong><small>Tabular catalog upload.</small></button>
+        <button data-source-choice="json"><span class="source-card-icon import">{ }</span><strong>JSON Import</strong><small>Preview a MediaVault JSON catalog.</small></button>
+        <button data-source-choice="discogs"><span class="source-card-icon">D</span><strong>Discogs</strong><small>Music collection source.</small></button>
+        <button data-source-choice="openlibrary"><span class="source-card-icon">OL</span><strong>OpenLibrary</strong><small>Book collection source.</small></button>
+        <button data-source-choice="steam"><span class="source-card-icon">S</span><strong>Steam</strong><small>Game library source.</small></button>
+        <button data-source-choice="manual"><span class="source-card-icon manual">＋</span><strong>Manual Collection</strong><small>Locally managed collection instance.</small></button>
       </div>
     </div>
   </div>

@@ -154,10 +154,12 @@ access.
 
 ## Sources and catalog portability
 
-Settings treats catalog provenance as **Sources**. MediaVault Local Database,
-Jellyfin, Catalog Import, and Manual Entry appear as independent source cards;
-Jellyfin is one source rather than the organizing model. Metadata provider health
-stays under Metadata Providers.
+Settings treats catalog provenance as **Sources**. MediaVault Local Database is
+always present. External cards represent connected instances—not generic source
+types—so Jellyfin appears only after it is configured and each completed JSON
+import appears as its own import source. With no external instances, Sources
+shows a focused empty state. Metadata provider health stays under Metadata
+Providers.
 
 Top-level source actions include Add Source, Import Catalog, Export Catalog,
 Sync All Sources, and a confirmed Full Refresh. JSON exports contain collector
@@ -169,3 +171,8 @@ matches, possible duplicates, or ignored, and each review decision explicitly
 creates an item, attaches an import source, or ignores it. Import attachment
 never overwrites existing collector fields. CSV import is reserved for a later
 phase.
+
+Add Source currently presents extensible setup placeholders for Jellyfin, Plex,
+CSV Import, JSON Import, Discogs, OpenLibrary, Steam, and Manual Collection.
+Deleting or disabling a source detaches its connection records but never deletes
+MediaVault catalog items.
