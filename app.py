@@ -2164,21 +2164,37 @@ def refresh_media_metadata(item_id: int):
 
 @app.post("/api/metadata/refresh-all")
 def refresh_all_metadata():
-    items = db().execute(
-        "SELECT id, title, media_type FROM media "
-        "WHERE media_type IN ('Movies', 'Television', 'Music') "
-        "ORDER BY media_type, title"
-    ).fetchall()
+    try:
+        items = db().execute(
+            "SELECT id, title, media_type FROM media "
+            "WHERE media_type IN ('Movies', 'Television', 'Music') "
+            "ORDER BY media_type, title"
+        ).fetchall()
+    except Exception as exc:
+        app.logger.exception(
+            "Metadata refresh could not start source=%r error=%s",
+            "MediaVault Database / master catalog", exc,
+        )
+        return jsonify({
+            "success": False,
+            "processed": 0,
+            "enriched": 0,
+            "skipped": 0,
+            "failed": 0,
+            "errors": [{"error": str(exc)}],
+        }), 500
     started_at = datetime.now(timezone.utc).isoformat()
     app.logger.info(
         "Metadata refresh started source=%r item_count=%s",
         "MediaVault Database / master catalog", len(items),
     )
     result = {
+        "success": True,
         "processed": 0,
         "enriched": 0,
         "skipped": 0,
         "failed": 0,
+        "errors": [],
         "failures": [],
         "categories": {
             "Movies": {"processed": 0, "enriched": 0, "skipped": 0, "failed": 0},
@@ -2206,29 +2222,38 @@ def refresh_all_metadata():
                 "Metadata refresh skipped item_id=%s title=%r error=%s",
                 item["id"], item["title"], exc,
             )
-        except (ValueError, sqlite3.Error) as exc:
+        except Exception as exc:
+            db().rollback()
             result["failed"] += 1
             category["failed"] += 1
-            result["failures"].append({
+            error = {
                 "id": item["id"], "title": item["title"],
                 "media_type": item["media_type"],
                 "status": "failed", "error": str(exc),
-            })
-            app.logger.error(
+            }
+            result["failures"].append(error)
+            result["errors"].append(error)
+            app.logger.exception(
                 "Metadata refresh failed item_id=%s title=%r error=%s",
                 item["id"], item["title"], exc,
             )
     result["started_at"] = started_at
     result["completed_at"] = datetime.now(timezone.utc).isoformat()
-    db().execute(
-        """
-        INSERT INTO app_settings(key, value)
-        VALUES('metadata_last_refresh_summary', ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-        """,
-        (json.dumps(result, separators=(",", ":")),),
-    )
-    db().commit()
+    try:
+        db().execute(
+            """
+            INSERT INTO app_settings(key, value)
+            VALUES('metadata_last_refresh_summary', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (json.dumps(result, separators=(",", ":")),),
+        )
+        db().commit()
+    except Exception as exc:
+        db().rollback()
+        app.logger.exception(
+            "Metadata refresh summary could not be stored error=%s", exc
+        )
     app.logger.info(
         "Metadata refresh complete source=%r item_count=%s enriched=%s "
         "skipped=%s failed=%s",
