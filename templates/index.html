@@ -187,6 +187,7 @@
         <input type="hidden" name="id">
         <div class="form-grid">
           <label class="full"><span>Title *</span><input name="title" required placeholder="What are you looking for?"></label>
+          <label class="full"><span>Artist</span><input name="artist" placeholder="Optional — useful for music"></label>
           <label><span>Year</span><input name="year" type="number" min="1000" max="2100" placeholder="Optional"></label>
           <label><span>Media Type</span><select name="media_type"><option value="">Not specified</option><option>Movie</option><option>Television</option><option>Music</option><option>Game</option><option>Book</option><option>Other</option></select></label>
           <label class="full"><span>Notes</span><textarea name="notes" rows="3" placeholder="Optional reminder"></textarea></label>
@@ -194,6 +195,33 @@
         <p class="form-error" id="wishlistError"></p>
         <div class="modal-actions"><span></span><button type="button" class="button secondary" id="cancelWishlistModal">Cancel</button><button class="button primary">Save Wishlist Item</button></div>
       </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="wishlistDetail" hidden>
+    <div class="quick-view wishlist-detail" role="dialog" aria-modal="true" aria-labelledby="wishlistDetailTitle">
+      <div class="quick-backdrop">
+        <button class="icon-button quick-close" id="closeWishlistDetail" aria-label="Close">×</button>
+      </div>
+      <div class="quick-content">
+        <div class="quick-poster" id="wishlistDetailPoster"><span>♡</span></div>
+        <div class="quick-main">
+          <div class="quick-title-row">
+            <div><p class="eyebrow" id="wishlistDetailType">WISHLIST ITEM</p><h2 id="wishlistDetailTitle"></h2><p class="quick-subtitle" id="wishlistDetailSubtitle"></p></div>
+            <div class="quick-actions">
+              <button class="button secondary" id="editWishlistDetail">Edit Wishlist Item</button>
+              <button class="button secondary" id="refreshWishlistMetadata">Refresh Metadata</button>
+              <button class="button danger" id="deleteWishlistDetail">Remove from Wishlist</button>
+              <button class="button primary" id="closeWishlistDetailButton">Close</button>
+            </div>
+          </div>
+          <div class="source-chips" id="wishlistDetailChips"></div>
+          <p class="quick-overview" id="wishlistDetailOverview"></p>
+          <div class="metadata-labels"><span>Metadata Provider</span><span id="wishlistDetailProvider">Manual / none</span></div>
+          <div class="metadata-grid" id="wishlistDetailMetadata"></div>
+          <div class="notes-section" id="wishlistDetailNotes" hidden><small>NOTES</small><p></p></div>
+        </div>
+      </div>
     </div>
   </div>
 

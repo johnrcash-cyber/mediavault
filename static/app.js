@@ -1,6 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => document.querySelectorAll(selector);
-const state = { query: "", type: "", status: "", origin: "", view: "dashboard", items: [], wishlistItems: [], jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviders: ["musicbrainz"], settingsTab: "metadata", catalogPreview: null, catalogCategory: "new_items" };
+const state = { query: "", type: "", status: "", origin: "", view: "dashboard", items: [], wishlistItems: [], wishlistDetailItem: null, returnToWishlistDetail: false, jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviders: ["musicbrainz"], settingsTab: "metadata", catalogPreview: null, catalogCategory: "new_items" };
 const typeIcons = { Movies: "▶", Television: "TV", Music: "♫", Games: "✦", Books: "B", Other: "MV" };
 
 async function api(url, options = {}) {
@@ -44,7 +44,7 @@ function card(item, options = {}) {
       <p class="card-details">${escapeHtml(detailBits)}</p>
       ${summary ? `<p class="card-summary">${escapeHtml(summary)}</p>` : `<p class="card-summary empty">${enrichmentStatus === "Pending" ? "Metadata pending…" : enrichmentStatus === "Failed" ? "Metadata enrichment failed." : "Metadata not found."}</p>`}
       ${sourceBadges ? `<div class="card-sources">${sourceBadges}</div>` : ""}
-      ${isWishlist ? `<div class="card-meta wishlist-card-meta"><span class="wishlist-not-owned">♡ Not owned</span><span class="wishlist-card-actions"><button class="text-button" data-wishlist-action="edit">Edit</button><button class="text-button danger-text" data-wishlist-action="delete">Delete</button></span></div>` : ""}
+      ${isWishlist ? `<div class="card-meta wishlist-card-meta"><span class="wishlist-not-owned">♡ Not owned</span><span>${escapeHtml(enrichmentStatus)}</span></div>` : ""}
       <div class="catalog-card-meta card-meta"><span class="status-pill ${statusClass}">${escapeHtml(item.status)}</span><span class="rating">${item.rating ? `★ ${Number(item.rating).toFixed(1)}` : escapeHtml(item.physical_location || item.condition || "")}</span></div>
     </div></article>`;
 }
@@ -103,6 +103,12 @@ function wishlistCardData(item) {
 let wishlistRefreshTimer;
 async function loadWishlist() {
   state.wishlistItems = await api("/api/wishlist");
+  if (!$("#wishlistDetail").hidden && state.wishlistDetailItem) {
+    const refreshedDetail = state.wishlistItems.find(
+      (item) => item.id === state.wishlistDetailItem.id
+    );
+    if (refreshedDetail) openWishlistDetail(refreshedDetail);
+  }
   $("#wishlistCount").textContent = `${state.wishlistItems.length} ${state.wishlistItems.length === 1 ? "item" : "items"}`;
   $("#wishlistGrid").innerHTML = state.wishlistItems.length
     ? state.wishlistItems.map((item) =>
@@ -658,10 +664,12 @@ function closeModal() {
 }
 
 function openWishlistModal(item = null) {
+  if (!item) state.returnToWishlistDetail = false;
   const form = $("#wishlistForm");
   form.reset();
   form.elements.id.value = item?.id || "";
   form.elements.title.value = item?.title || "";
+  form.elements.artist.value = item?.artist || "";
   form.elements.year.value = item?.year || "";
   form.elements.media_type.value = item?.media_type || "";
   form.elements.notes.value = item?.notes || "";
@@ -674,7 +682,65 @@ function openWishlistModal(item = null) {
 
 function closeWishlistModal() {
   $("#wishlistModal").hidden = true;
+  if (state.returnToWishlistDetail && state.wishlistDetailItem) {
+    $("#wishlistDetail").hidden = false;
+    document.body.style.overflow = "hidden";
+  } else {
+    document.body.style.overflow = $("#wishlistDetail").hidden ? "" : "hidden";
+  }
+}
+
+function openWishlistDetail(item) {
+  if (!item) {
+    toast("That Wishlist item is no longer available.");
+    return;
+  }
+  state.wishlistDetailItem = item;
+  $("#wishlistDetailTitle").textContent = item.title;
+  $("#wishlistDetailType").textContent = `${item.media_type || "WISHLIST"} · WISHLIST`;
+  $("#wishlistDetailSubtitle").textContent = [
+    item.artist, item.year,
+    item.runtime_minutes ? `${item.runtime_minutes} min` : "",
+  ].filter(Boolean).join(" · ");
+  $("#wishlistDetailOverview").textContent = item.overview
+    || (item.enrichment_status === "Pending"
+      ? "Metadata enrichment is pending."
+      : "No metadata summary is available.");
+  $("#wishlistDetailProvider").textContent = item.provider || "Manual / none";
+  $("#wishlistDetailMetadata").innerHTML = [
+    fact("Artist", item.artist),
+    fact("Year", item.year),
+    fact("Media type", item.media_type),
+    fact("Runtime", item.runtime_minutes ? `${item.runtime_minutes} min` : ""),
+    fact("Genres", item.genres),
+    fact("Enrichment", item.enrichment_status || item.metadata_status),
+    fact("Wishlist status", `${item.status || "Open"} / Not owned`),
+    fact("Last enriched", item.enriched_at ? new Date(item.enriched_at).toLocaleString() : ""),
+  ].join("");
+  $("#wishlistDetailChips").innerHTML =
+    '<span class="source-chip wishlist-source">♡ Wishlist · Not owned</span>';
+  $("#wishlistDetailPoster").style.backgroundImage = item.poster_url
+    ? `url("${item.poster_url}")` : "";
+  $("#wishlistDetailPoster").classList.toggle("has-image", Boolean(item.poster_url));
+  $("#wishlistDetailNotes").hidden = !item.notes;
+  $("#wishlistDetailNotes p").textContent = item.notes || "";
+  $("#wishlistDetail").hidden = false;
+  document.body.style.overflow = "hidden";
+}
+
+function closeWishlistDetail() {
+  $("#wishlistDetail").hidden = true;
+  state.returnToWishlistDetail = false;
   document.body.style.overflow = "";
+}
+
+async function deleteWishlistItem(item) {
+  if (!item || !confirm(`Delete "${item.title}" from Wishlist?`)) return;
+  await api(`/api/wishlist/${item.id}`, { method: "DELETE" });
+  if (!$("#wishlistDetail").hidden) closeWishlistDetail();
+  state.wishlistDetailItem = null;
+  toast("Wishlist item deleted.");
+  await loadWishlist();
 }
 
 function toast(message, duration = 2200) {
@@ -697,16 +763,19 @@ document.addEventListener("click", async (event) => {
     if (!item) return;
     if (wishlistAction.dataset.wishlistAction === "edit") {
       openWishlistModal(item);
-    } else if (
-      wishlistAction.dataset.wishlistAction === "delete"
-      && confirm(`Delete "${item.title}" from Wishlist?`)
-    ) {
+    } else if (wishlistAction.dataset.wishlistAction === "delete") {
       try {
-        await api(`/api/wishlist/${item.id}`, { method: "DELETE" });
-        toast("Wishlist item deleted.");
-        await loadWishlist();
+        await deleteWishlistItem(item);
       } catch (error) { toast(error.message, 5000); }
     }
+    return;
+  }
+  const wishlistCard = event.target.closest(".wishlist-card[data-wishlist-id]");
+  if (wishlistCard) {
+    const item = state.wishlistItems.find(
+      (value) => String(value.id) === wishlistCard.dataset.wishlistId
+    );
+    openWishlistDetail(item);
     return;
   }
   const sourceInstanceAction = event.target.closest("[data-source-action]");
@@ -892,6 +961,8 @@ $("#searchInput").addEventListener("input", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) { event.preventDefault(); $("#searchInput").focus(); }
   if (event.key === "Escape" && !$("#metadataSearchModal").hidden) closeMetadataSearch();
+  else if (event.key === "Escape" && !$("#wishlistModal").hidden) closeWishlistModal();
+  else if (event.key === "Escape" && !$("#wishlistDetail").hidden) closeWishlistDetail();
   else if (event.key === "Escape" && !$("#modal").hidden) closeModal();
   else if (event.key === "Escape" && !$("#quickView").hidden) closeQuickView();
 });
@@ -906,6 +977,36 @@ $("#cancelWishlistModal").addEventListener("click", closeWishlistModal);
 $("#wishlistModal").addEventListener("click", (event) => {
   if (event.target === $("#wishlistModal")) closeWishlistModal();
 });
+$("#closeWishlistDetail").addEventListener("click", closeWishlistDetail);
+$("#closeWishlistDetailButton").addEventListener("click", closeWishlistDetail);
+$("#wishlistDetail").addEventListener("click", (event) => {
+  if (event.target === $("#wishlistDetail")) closeWishlistDetail();
+});
+$("#editWishlistDetail").addEventListener("click", () => {
+  if (!state.wishlistDetailItem) return;
+  state.returnToWishlistDetail = true;
+  $("#wishlistDetail").hidden = true;
+  openWishlistModal(state.wishlistDetailItem);
+});
+$("#refreshWishlistMetadata").addEventListener("click", async () => {
+  const item = state.wishlistDetailItem;
+  if (!item) return;
+  const button = $("#refreshWishlistMetadata");
+  button.disabled = true;
+  try {
+    await api(`/api/wishlist/${item.id}/refresh`, { method: "POST" });
+    item.metadata_status = "Pending";
+    item.enrichment_status = "Pending";
+    openWishlistDetail(item);
+    toast("Wishlist metadata refresh started.");
+    await loadWishlist();
+  } catch (error) { toast(error.message, 5000); }
+  finally { button.disabled = false; }
+});
+$("#deleteWishlistDetail").addEventListener("click", async () => {
+  try { await deleteWishlistItem(state.wishlistDetailItem); }
+  catch (error) { toast(error.message, 5000); }
+});
 $("#wishlistForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   $("#wishlistError").textContent = "";
@@ -919,9 +1020,17 @@ $("#wishlistForm").addEventListener("submit", async (event) => {
       method: itemId ? "PUT" : "POST",
       body: JSON.stringify(values),
     });
+    const returnToDetail = state.returnToWishlistDetail;
+    state.returnToWishlistDetail = false;
     closeWishlistModal();
     toast(itemId ? "Wishlist item updated." : "Added to Wishlist.");
     await loadWishlist();
+    if (returnToDetail && itemId) {
+      const updated = state.wishlistItems.find(
+        (item) => String(item.id) === String(itemId)
+      );
+      openWishlistDetail(updated);
+    }
   } catch (error) { $("#wishlistError").textContent = error.message; }
   finally { submit.disabled = false; }
 });

@@ -184,6 +184,7 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             title TEXT NOT NULL,
+            artist TEXT,
             year INTEGER,
             media_type TEXT,
             notes TEXT,
@@ -210,6 +211,7 @@ def init_db() -> None:
     }
     wishlist_migrations = {
         "user_id": "INTEGER",
+        "artist": "TEXT",
         "year": "INTEGER",
         "media_type": "TEXT",
         "notes": "TEXT",
@@ -327,6 +329,7 @@ def clean_wishlist_payload(payload: dict) -> dict:
         raise ValueError("Choose a valid media type.")
     return {
         "title": title,
+        "artist": str(payload.get("artist", "")).strip(),
         "year": year,
         "media_type": media_type,
         "notes": str(payload.get("notes", "")).strip(),
@@ -364,7 +367,7 @@ def enrich_wishlist_item(item_id: int) -> dict:
         for provider in music_provider_order():
             try:
                 external_id = find_music_release(
-                    provider, item["title"], "", item["year"]
+                    provider, item["title"], item["artist"] or "", item["year"]
                 )
                 if external_id:
                     metadata = fetchers[provider](external_id)
@@ -2060,12 +2063,12 @@ def create_wishlist_item():
         cursor = db().execute(
             """
             INSERT INTO wishlist_items (
-                user_id, title, year, media_type, notes, status,
+                user_id, title, artist, year, media_type, notes, status,
                 metadata_status, created_at, updated_at
-            ) VALUES (NULL, ?, ?, ?, ?, 'Open', 'Pending', ?, ?)
+            ) VALUES (NULL, ?, ?, ?, ?, ?, 'Open', 'Pending', ?, ?)
             """,
             (
-                item["title"], item["year"], item["media_type"],
+                item["title"], item["artist"], item["year"], item["media_type"],
                 item["notes"], now, now,
             ),
         )
@@ -2093,19 +2096,33 @@ def update_wishlist_item(item_id: int):
         item = clean_wishlist_payload(request.get_json(silent=True) or {})
     except (ValueError, TypeError) as exc:
         return jsonify({"error": str(exc)}), 400
+    existing = db().execute(
+        "SELECT * FROM wishlist_items WHERE id = ? AND status = 'Open'",
+        (item_id,),
+    ).fetchone()
+    if existing is None:
+        return jsonify({"error": "Wishlist item not found."}), 404
+    identity_changed = any((
+        existing["title"] != item["title"],
+        (existing["artist"] or "") != item["artist"],
+        existing["year"] != item["year"],
+        existing["media_type"] != item["media_type"],
+    ))
+    reset_metadata = """
+        , poster_url = NULL, overview = NULL, genres = NULL,
+        runtime_minutes = NULL, provider = NULL, provider_id = NULL,
+        enriched_at = NULL, metadata_status = 'Pending',
+        enrichment_status = 'Pending', enrichment_error = NULL
+    """ if identity_changed else ""
     cursor = db().execute(
-        """
-        UPDATE wishlist_items SET title = ?, year = ?, media_type = ?,
-            notes = ?, poster_url = NULL, overview = NULL, genres = NULL,
-            runtime_minutes = NULL, provider = NULL, provider_id = NULL,
-            enriched_at = NULL, metadata_status = 'Pending',
-            enrichment_status = 'Pending', enrichment_error = NULL,
-            updated_at = ?
+        f"""
+        UPDATE wishlist_items SET title = ?, artist = ?, year = ?,
+            media_type = ?, notes = ?, updated_at = ? {reset_metadata}
         WHERE id = ? AND status = 'Open'
         """,
         (
-            item["title"], item["year"], item["media_type"], item["notes"],
-            datetime.now(timezone.utc).isoformat(), item_id,
+            item["title"], item["artist"], item["year"], item["media_type"],
+            item["notes"], datetime.now(timezone.utc).isoformat(), item_id,
         ),
     )
     db().commit()
@@ -2115,8 +2132,31 @@ def update_wishlist_item(item_id: int):
         "SELECT * FROM wishlist_items WHERE id = ?", (item_id,)
     ).fetchone()
     response = wishlist_to_dict(row)
-    enrich_wishlist_item_async(item_id)
+    if identity_changed:
+        enrich_wishlist_item_async(item_id)
     return jsonify(response)
+
+
+@app.post("/api/wishlist/<int:item_id>/refresh")
+def refresh_wishlist_metadata(item_id: int):
+    row = db().execute(
+        "SELECT id FROM wishlist_items WHERE id = ? AND status = 'Open'",
+        (item_id,),
+    ).fetchone()
+    if row is None:
+        return jsonify({"error": "Wishlist item not found."}), 404
+    now = datetime.now(timezone.utc).isoformat()
+    db().execute(
+        """
+        UPDATE wishlist_items SET metadata_status = 'Pending',
+            enrichment_status = 'Pending', enrichment_error = NULL,
+            updated_at = ? WHERE id = ?
+        """,
+        (now, item_id),
+    )
+    db().commit()
+    enrich_wishlist_item_async(item_id)
+    return jsonify({"status": "Pending", "id": item_id}), 202
 
 
 @app.delete("/api/wishlist/<int:item_id>")
