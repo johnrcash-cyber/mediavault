@@ -178,6 +178,22 @@ def init_db() -> None:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wishlist_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            title TEXT NOT NULL,
+            year INTEGER,
+            media_type TEXT,
+            notes TEXT,
+            status TEXT NOT NULL DEFAULT 'Open',
+            metadata_status TEXT NOT NULL DEFAULT 'Pending',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
     preview_columns = {
         row[1] for row in connection.execute(
             "PRAGMA table_info(import_previews)"
@@ -224,6 +240,33 @@ def row_to_card_dict(row: sqlite3.Row) -> dict:
     )
     item["sources"] = ["Jellyfin"] if has_jellyfin else []
     return item
+
+
+def wishlist_to_dict(row: sqlite3.Row) -> dict:
+    return dict(row)
+
+
+def clean_wishlist_payload(payload: dict) -> dict:
+    title = str(payload.get("title", "")).strip()
+    if not title:
+        raise ValueError("Title is required.")
+    year = payload.get("year")
+    if year not in (None, ""):
+        year = int(year)
+        if year < 1000 or year > datetime.now().year + 5:
+            raise ValueError("Enter a valid year.")
+    else:
+        year = None
+    media_type = str(payload.get("media_type", "")).strip()
+    allowed_types = ("", "Movie", "Television", "Music", "Game", "Book", "Other")
+    if media_type not in allowed_types:
+        raise ValueError("Choose a valid media type.")
+    return {
+        "title": title,
+        "year": year,
+        "media_type": media_type,
+        "notes": str(payload.get("notes", "")).strip(),
+    }
 
 
 def clean_payload(payload: dict) -> dict:
@@ -1820,6 +1863,78 @@ def delete_media(item_id: int):
     db().commit()
     if cursor.rowcount == 0:
         return jsonify({"error": "Item not found."}), 404
+    return "", 204
+
+
+@app.get("/api/wishlist")
+def list_wishlist_items():
+    rows = db().execute(
+        "SELECT * FROM wishlist_items WHERE status = 'Open' "
+        "ORDER BY created_at DESC, id DESC"
+    ).fetchall()
+    return jsonify([wishlist_to_dict(row) for row in rows])
+
+
+@app.post("/api/wishlist")
+def create_wishlist_item():
+    try:
+        item = clean_wishlist_payload(request.get_json(silent=True) or {})
+    except (ValueError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = db().execute(
+        """
+        INSERT INTO wishlist_items (
+            user_id, title, year, media_type, notes, status,
+            metadata_status, created_at, updated_at
+        ) VALUES (NULL, ?, ?, ?, ?, 'Open', 'Pending', ?, ?)
+        """,
+        (
+            item["title"], item["year"], item["media_type"],
+            item["notes"], now, now,
+        ),
+    )
+    db().commit()
+    row = db().execute(
+        "SELECT * FROM wishlist_items WHERE id = ?", (cursor.lastrowid,)
+    ).fetchone()
+    return jsonify(wishlist_to_dict(row)), 201
+
+
+@app.put("/api/wishlist/<int:item_id>")
+def update_wishlist_item(item_id: int):
+    try:
+        item = clean_wishlist_payload(request.get_json(silent=True) or {})
+    except (ValueError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    cursor = db().execute(
+        """
+        UPDATE wishlist_items SET title = ?, year = ?, media_type = ?,
+            notes = ?, updated_at = ?
+        WHERE id = ? AND status = 'Open'
+        """,
+        (
+            item["title"], item["year"], item["media_type"], item["notes"],
+            datetime.now(timezone.utc).isoformat(), item_id,
+        ),
+    )
+    db().commit()
+    if cursor.rowcount == 0:
+        return jsonify({"error": "Wishlist item not found."}), 404
+    row = db().execute(
+        "SELECT * FROM wishlist_items WHERE id = ?", (item_id,)
+    ).fetchone()
+    return jsonify(wishlist_to_dict(row))
+
+
+@app.delete("/api/wishlist/<int:item_id>")
+def delete_wishlist_item(item_id: int):
+    cursor = db().execute(
+        "DELETE FROM wishlist_items WHERE id = ?", (item_id,)
+    )
+    db().commit()
+    if cursor.rowcount == 0:
+        return jsonify({"error": "Wishlist item not found."}), 404
     return "", 204
 
 

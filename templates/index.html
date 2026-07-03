@@ -27,6 +27,8 @@
         <button class="nav-link type-link" data-type="Games"><span>◆</span> Games</button>
         <button class="nav-link type-link" data-type="Books"><span>▤</span> Books</button>
         <button class="nav-link type-link" data-type="Other"><span>•••</span> Other</button>
+        <p class="nav-label">LISTS</p>
+        <button class="nav-link" data-view="wishlist"><span>♡</span> Wishlist</button>
         <p class="nav-label">SYSTEM</p>
         <button class="nav-link" id="refreshLibraryAction"><span>↻</span> Refresh Library</button>
         <button class="nav-link" data-view="settings"><span>⚙</span> Settings</button>
@@ -73,6 +75,14 @@
             <button class="text-button clear-filter" id="clearFilters">Clear filters</button>
           </div>
           <div id="collectionGrid" class="media-grid collection-grid"></div>
+        </section>
+
+        <section id="wishlistView" hidden>
+          <div class="page-heading collection-heading">
+            <div><p class="eyebrow">LIST</p><h1>Wishlist</h1><p id="wishlistCount">0 items</p></div>
+            <button class="button primary" id="addWishlistItem">＋ Add Wishlist Item</button>
+          </div>
+          <div id="wishlistGrid" class="wishlist-grid"></div>
         </section>
 
         <section id="settingsView" hidden>
@@ -167,6 +177,23 @@
         <button data-source-choice="steam"><span class="source-card-icon">S</span><strong>Steam</strong><small>Game library source.</small></button>
         <button data-source-choice="manual"><span class="source-card-icon manual">＋</span><strong>Manual Collection</strong><small>Locally managed collection instance.</small></button>
       </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="wishlistModal" hidden>
+    <div class="modal wishlist-modal" role="dialog" aria-modal="true" aria-labelledby="wishlistModalTitle">
+      <div class="modal-head"><div><p class="eyebrow">WISHLIST ITEM</p><h2 id="wishlistModalTitle">Add Wishlist Item</h2></div><button class="icon-button" id="closeWishlistModal" aria-label="Close">×</button></div>
+      <form id="wishlistForm">
+        <input type="hidden" name="id">
+        <div class="form-grid">
+          <label class="full"><span>Title *</span><input name="title" required placeholder="What are you looking for?"></label>
+          <label><span>Year</span><input name="year" type="number" min="1000" max="2100" placeholder="Optional"></label>
+          <label><span>Media Type</span><select name="media_type"><option value="">Not specified</option><option>Movie</option><option>Television</option><option>Music</option><option>Game</option><option>Book</option><option>Other</option></select></label>
+          <label class="full"><span>Notes</span><textarea name="notes" rows="3" placeholder="Optional reminder"></textarea></label>
+        </div>
+        <p class="form-error" id="wishlistError"></p>
+        <div class="modal-actions"><span></span><button type="button" class="button secondary" id="cancelWishlistModal">Cancel</button><button class="button primary">Save Wishlist Item</button></div>
+      </form>
     </div>
   </div>
 

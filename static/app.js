@@ -1,6 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => document.querySelectorAll(selector);
-const state = { query: "", type: "", status: "", origin: "", view: "dashboard", items: [], jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviders: ["musicbrainz"], settingsTab: "metadata", catalogPreview: null, catalogCategory: "new_items" };
+const state = { query: "", type: "", status: "", origin: "", view: "dashboard", items: [], wishlistItems: [], jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviders: ["musicbrainz"], settingsTab: "metadata", catalogPreview: null, catalogCategory: "new_items" };
 const typeIcons = { Movies: "▶", Television: "TV", Music: "♫", Games: "✦", Books: "B", Other: "MV" };
 
 async function api(url, options = {}) {
@@ -71,6 +71,24 @@ async function loadCollection() {
   $("#resultSummary").textContent = `${state.items.length} ${state.items.length === 1 ? "item" : "items"} found`;
 }
 
+function wishlistRow(item) {
+  const details = [item.year, item.media_type].filter(Boolean).join(" · ");
+  return `<article class="wishlist-row" data-wishlist-id="${item.id}">
+    <div class="wishlist-row-icon">♡</div>
+    <div class="wishlist-row-main"><h3>${escapeHtml(item.title)}</h3>${details ? `<p>${escapeHtml(details)}</p>` : ""}${item.notes ? `<span>${escapeHtml(item.notes)}</span>` : ""}</div>
+    <span class="wishlist-metadata-status">${escapeHtml(item.metadata_status)}</span>
+    <div class="wishlist-row-actions"><button class="text-button" data-wishlist-action="edit">Edit</button><button class="text-button danger-text" data-wishlist-action="delete">Delete</button></div>
+  </article>`;
+}
+
+async function loadWishlist() {
+  state.wishlistItems = await api("/api/wishlist");
+  $("#wishlistCount").textContent = `${state.wishlistItems.length} ${state.wishlistItems.length === 1 ? "item" : "items"}`;
+  $("#wishlistGrid").innerHTML = state.wishlistItems.length
+    ? state.wishlistItems.map(wishlistRow).join("")
+    : `<div class="empty-state"><strong>Your Wishlist is empty.</strong><span>Add a title you want to remember.</span><br><button class="button primary" data-add-wishlist>＋ Add Wishlist Item</button></div>`;
+}
+
 function setView(view, filters = {}) {
   state.view = view;
   if ("type" in filters) state.type = filters.type;
@@ -78,6 +96,7 @@ function setView(view, filters = {}) {
   if ("origin" in filters) state.origin = filters.origin;
   $("#dashboardView").hidden = view !== "dashboard";
   $("#collectionView").hidden = view !== "collection";
+  $("#wishlistView").hidden = view !== "wishlist";
   $("#settingsView").hidden = view !== "settings";
   $$(".nav-link").forEach((el) => el.classList.remove("active"));
   $(`[data-view="${view}"]`)?.classList.add("active");
@@ -85,6 +104,7 @@ function setView(view, filters = {}) {
   $("#statusFilter").value = state.status;
   $(".sidebar").classList.remove("open");
   if (view === "collection") loadCollection();
+  if (view === "wishlist") loadWishlist();
   if (view === "settings") {
     setSettingsTab(state.settingsTab);
     Promise.all([loadProviderSettings(), loadSourceStatus(), loadSources()]);
@@ -592,6 +612,26 @@ function closeModal() {
   document.body.style.overflow = "";
 }
 
+function openWishlistModal(item = null) {
+  const form = $("#wishlistForm");
+  form.reset();
+  form.elements.id.value = item?.id || "";
+  form.elements.title.value = item?.title || "";
+  form.elements.year.value = item?.year || "";
+  form.elements.media_type.value = item?.media_type || "";
+  form.elements.notes.value = item?.notes || "";
+  $("#wishlistModalTitle").textContent = item ? "Edit Wishlist Item" : "Add Wishlist Item";
+  $("#wishlistError").textContent = "";
+  $("#wishlistModal").hidden = false;
+  document.body.style.overflow = "hidden";
+  setTimeout(() => form.elements.title.focus(), 30);
+}
+
+function closeWishlistModal() {
+  $("#wishlistModal").hidden = true;
+  document.body.style.overflow = "";
+}
+
 function toast(message, duration = 2200) {
   $("#toast").textContent = message;
   $("#toast").classList.add("show");
@@ -599,6 +639,31 @@ function toast(message, duration = 2200) {
 }
 
 document.addEventListener("click", async (event) => {
+  if (event.target.closest("[data-add-wishlist]")) {
+    openWishlistModal();
+    return;
+  }
+  const wishlistAction = event.target.closest("[data-wishlist-action]");
+  if (wishlistAction) {
+    const row = wishlistAction.closest("[data-wishlist-id]");
+    const item = state.wishlistItems.find(
+      (value) => String(value.id) === row?.dataset.wishlistId
+    );
+    if (!item) return;
+    if (wishlistAction.dataset.wishlistAction === "edit") {
+      openWishlistModal(item);
+    } else if (
+      wishlistAction.dataset.wishlistAction === "delete"
+      && confirm(`Delete "${item.title}" from Wishlist?`)
+    ) {
+      try {
+        await api(`/api/wishlist/${item.id}`, { method: "DELETE" });
+        toast("Wishlist item deleted.");
+        await loadWishlist();
+      } catch (error) { toast(error.message, 5000); }
+    }
+    return;
+  }
   const sourceInstanceAction = event.target.closest("[data-source-action]");
   if (sourceInstanceAction) {
     const action = sourceInstanceAction.dataset.sourceAction;
@@ -787,6 +852,31 @@ $$("[data-view]").forEach((el) => el.addEventListener("click", () => setView(el.
 $$(".type-link").forEach((el) => el.addEventListener("click", () => setView("collection", { type: el.dataset.type, status: "", origin: "" })));
 $$(".stat-card[data-stat-filter]").forEach((el) => el.addEventListener("click", () => setView("collection", { type: el.dataset.statFilter, status: "", origin: "" })));
 $("#viewAll").addEventListener("click", () => setView("collection", { type: "", status: "", origin: "" }));
+$("#addWishlistItem").addEventListener("click", () => openWishlistModal());
+$("#closeWishlistModal").addEventListener("click", closeWishlistModal);
+$("#cancelWishlistModal").addEventListener("click", closeWishlistModal);
+$("#wishlistModal").addEventListener("click", (event) => {
+  if (event.target === $("#wishlistModal")) closeWishlistModal();
+});
+$("#wishlistForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("#wishlistError").textContent = "";
+  const values = Object.fromEntries(new FormData(event.currentTarget));
+  const itemId = values.id;
+  delete values.id;
+  const submit = event.currentTarget.querySelector("button:not([type])");
+  submit.disabled = true;
+  try {
+    await api(itemId ? `/api/wishlist/${itemId}` : "/api/wishlist", {
+      method: itemId ? "PUT" : "POST",
+      body: JSON.stringify(values),
+    });
+    closeWishlistModal();
+    toast(itemId ? "Wishlist item updated." : "Added to Wishlist.");
+    await loadWishlist();
+  } catch (error) { $("#wishlistError").textContent = error.message; }
+  finally { submit.disabled = false; }
+});
 $("#typeFilter").addEventListener("change", (e) => { state.type = e.target.value; loadCollection(); });
 $("#statusFilter").addEventListener("change", (e) => { state.status = e.target.value; loadCollection(); });
 $("#clearFilters").addEventListener("click", () => { state.type = ""; state.status = ""; state.query = ""; $("#searchInput").value = ""; $("#typeFilter").value = ""; $("#statusFilter").value = ""; loadCollection(); });
