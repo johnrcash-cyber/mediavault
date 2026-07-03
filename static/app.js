@@ -309,8 +309,34 @@ async function loadSources() {
   try {
     const data = await api("/api/sources");
     $("#localSourceCount").textContent = data.local.items;
+    renderCatalogSourceHealth(data);
     renderSourceAccordions(data.instances || []);
   } catch (error) { toast(error.message); }
+}
+
+function renderCatalogSourceHealth(data) {
+  const instances = data.instances || [];
+  const sources = [
+    {
+      name: "MediaVault Database",
+      status: "Active",
+      detail: `${data.local.items || 0} catalog items`,
+    },
+    ...instances.map((source) => ({
+      name: source.name,
+      status: source.status || "Not Configured",
+      detail: source.type_label || source.type || "Catalog source",
+    })),
+  ];
+  $("#catalogSourceCount").textContent =
+    `${sources.length} ${sources.length === 1 ? "source" : "sources"}`;
+  $("#catalogSourceHealthGrid").innerHTML = sources.map((source) => {
+    const statusClass = source.status.toLowerCase().replaceAll(" ", "-");
+    return `<article class="source-health-card">
+      <div><strong>${escapeHtml(source.name)}</strong><span class="health-status ${statusClass}"><i></i>${escapeHtml(source.status)}</span></div>
+      <small>${escapeHtml(source.detail)}</small>
+    </article>`;
+  }).join("");
 }
 
 function renderExternalSourceCards(instances) {

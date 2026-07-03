@@ -181,8 +181,17 @@
               <div class="failed-items" id="failedItems" hidden></div>
             </div>
           </div>
-          <section class="sources-workspace" data-settings-section="sources" hidden>
-            <div class="sources-intro"><div><p class="eyebrow">CATALOG PROVENANCE</p><h2>Sources</h2><p>Sources manage how MediaVault receives and updates catalog data. MediaVault remains the master catalog.</p></div></div>
+          <section class="settings-panel provider-panel sources-workspace" data-settings-section="sources" hidden>
+            <div class="source-health-panel embedded catalog-source-health">
+              <div class="source-health-head"><div><p class="eyebrow">SOURCE HEALTH</p><h2>Catalog Sources</h2><p>Availability of the systems that feed the MediaVault catalog.</p></div></div>
+              <div class="source-health-grid" id="catalogSourceHealthGrid"></div>
+            </div>
+            <div class="settings-panel-head sources-panel-head">
+              <span class="integration-mark source-settings-mark">MV</span>
+              <div class="sources-intro"><p class="eyebrow">CATALOG PROVENANCE</p><h2>Sources</h2><p>Sources manage how MediaVault receives and updates catalog data. MediaVault remains the master catalog.</p></div>
+              <span class="connection-badge connected" id="catalogSourceCount">1 active</span>
+            </div>
+            <div class="sources-panel-body">
             <div class="source-top-actions">
               <button class="button primary" id="addSourceButton">＋ Add Source</button>
               <button class="button secondary" id="importCatalogButton">Import Catalog</button>
@@ -193,11 +202,15 @@
             <section class="source-hierarchy-section">
               <h3 class="source-section-heading">Master Catalog</h3>
               <div class="source-card-grid source-section-grid">
-              <article class="source-model-card master-catalog-card">
-                <div class="source-card-head"><span class="source-card-icon local">MV</span><div><h3>MediaVault Database</h3><small>INTERNAL</small></div><span class="source-state online">Active</span></div>
-                <p>Items stored directly inside MediaVault, including collector-owned fields.</p>
-                <div class="source-card-stats"><span><small>ITEMS</small><strong id="localSourceCount">0</strong></span><span><small>ROLE</small><strong>Master catalog</strong></span></div>
-                <div class="source-card-actions"><button class="text-button" id="viewLocalItems">View</button><button class="text-button" id="exportLocalCatalog">Export</button><button class="text-button" id="sourceFullRefreshButton">Refresh Metadata</button></div>
+              <article class="source-model-card source-accordion master-catalog-card">
+                <div class="source-accordion-summary master-catalog-summary">
+                  <span class="source-card-icon local">MV</span>
+                  <div class="source-summary-name"><h3>MediaVault Database</h3><small>Internal · Authoritative catalog</small></div>
+                  <span class="source-state online">Active</span>
+                  <span class="source-summary-stat"><small>ITEMS</small><strong id="localSourceCount">0</strong></span>
+                  <span class="source-summary-stat"><small>ROLE</small><strong>Master catalog</strong></span>
+                  <div class="source-summary-actions"><button class="text-button" id="viewLocalItems">View</button><button class="text-button" id="exportLocalCatalog">Export</button><button class="text-button" id="sourceFullRefreshButton">Refresh Metadata</button></div>
+                </div>
               </article>
               </div>
             </section>
@@ -207,6 +220,7 @@
               <div id="externalSourceCards" class="external-source-cards"></div>
               </div>
             </section>
+            </div>
           </section>
         </section>
       </div>
