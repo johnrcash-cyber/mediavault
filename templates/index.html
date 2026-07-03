@@ -19,7 +19,7 @@
       </a>
       <nav>
         <button class="nav-link active" data-view="dashboard"><span>⌂</span> Dashboard</button>
-        <button class="nav-link" data-view="collection"><span>▦</span> My Collection</button>
+        <button class="nav-link" data-view="collection"><span>▦</span> My Library</button>
         <p class="nav-label">COLLECTIONS</p>
         <button class="nav-link type-link" data-type="Movies"><span>▰</span> Movies</button>
         <button class="nav-link type-link" data-type="Television"><span>▣</span> Television</button>
@@ -53,18 +53,18 @@
           </div>
           <div class="stat-grid">
             <button class="stat-card" data-stat-filter=""><span class="stat-icon coral">▦</span><span><small>ALL MEDIA</small><strong id="totalCount">0</strong><em>items cataloged</em></span></button>
-            <button class="stat-card" data-stat-filter="Movies"><span class="stat-icon blue">▶</span><span><small>MOVIES</small><strong id="movieCount">0</strong><em>in your collection</em></span></button>
+            <button class="stat-card" data-stat-filter="Movies"><span class="stat-icon blue">▶</span><span><small>MOVIES</small><strong id="movieCount">0</strong><em>in your library</em></span></button>
             <button class="stat-card" data-stat-filter="Music"><span class="stat-icon amber">♫</span><span><small>MUSIC</small><strong id="musicCount">0</strong><em>albums & records</em></span></button>
             <button class="stat-card" data-stat-filter="Games"><span class="stat-icon green">✦</span><span><small>GAMES</small><strong id="gameCount">0</strong><em>across all systems</em></span></button>
           </div>
           <div class="section-head"><div><h2>Recently added</h2><p>Your latest finds and additions.</p></div><button class="text-button" id="viewAll">View all <span>→</span></button></div>
           <div id="recentGrid" class="media-grid"></div>
-          <div class="promise"><span class="promise-mark">MV</span><div><strong>Your collection. Your data.</strong><p>MediaVault keeps your catalog local, fast, and yours alone.</p></div><span class="promise-line"></span><b>KNOW WHAT YOU OWN.</b></div>
+          <div class="promise"><span class="promise-mark">MV</span><div><strong>Your library. Your data.</strong><p>MediaVault keeps your catalog local, fast, and yours alone.</p></div><span class="promise-line"></span><b>KNOW WHAT YOU OWN.</b></div>
         </section>
 
         <section id="collectionView" hidden>
           <div class="page-heading collection-heading">
-            <div><p class="eyebrow">CATALOG</p><h1 id="collectionTitle">My Collection</h1><p id="resultSummary">Every item you own, in one place.</p></div>
+            <div><p class="eyebrow">CATALOG</p><h1 id="collectionTitle">My Library</h1><p id="resultSummary">Every item you own, in one place.</p></div>
             <div class="view-controls"><button class="icon-button active" aria-label="Grid view">▦</button></div>
           </div>
           <div class="filter-bar">
@@ -210,7 +210,7 @@
           <div class="metadata-labels"><span>Metadata Provider</span><span id="quickMetadataProvider">Manual / none</span></div>
           <div class="metadata-grid" id="metadataGrid"></div>
           <div class="collector-section">
-            <div class="section-head"><div><h3>Ownership & collection</h3><p>Managed by MediaVault</p></div></div>
+            <div class="section-head"><div><h3>Ownership & library</h3><p>Managed by MediaVault</p></div></div>
             <div class="collector-grid" id="collectorGrid"></div>
           </div>
           <div class="notes-section" id="quickNotes" hidden><small>NOTES</small><p></p></div>
@@ -270,7 +270,7 @@
           <label class="full"><span>Notes</span><textarea name="notes" rows="3" placeholder="Edition details, lending notes, or anything useful…"></textarea></label>
         </div>
         <p class="form-error" id="formError"></p>
-        <div class="modal-actions"><button type="button" class="button danger" id="deleteButton" hidden>Delete</button><span></span><button type="button" class="button secondary" id="cancelButton">Cancel</button><button type="submit" class="button primary" id="saveButton">Add to collection</button></div>
+        <div class="modal-actions"><button type="button" class="button danger" id="deleteButton" hidden>Delete</button><span></span><button type="button" class="button secondary" id="cancelButton">Cancel</button><button type="submit" class="button primary" id="saveButton">Add to library</button></div>
       </form>
     </div>
   </div>

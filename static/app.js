@@ -67,7 +67,7 @@ async function loadCollection() {
   if (state.origin) params.set("source", state.origin);
   state.items = await api(`/api/media?${params}`);
   $("#collectionGrid").innerHTML = state.items.length ? state.items.map(card).join("") : emptyState(Boolean(state.query || state.type || state.status));
-  $("#collectionTitle").textContent = state.origin === "manual" ? "Manual Items" : state.type || state.status || "My Collection";
+  $("#collectionTitle").textContent = state.origin === "manual" ? "Manual Items" : state.type || state.status || "My Library";
   $("#resultSummary").textContent = `${state.items.length} ${state.items.length === 1 ? "item" : "items"} found`;
 }
 
@@ -567,7 +567,7 @@ function openModal(item = null) {
   $("#formError").textContent = "";
   $("#itemId").value = item?.id || "";
   $("#modalTitle").textContent = item ? "Edit catalog item" : "Add to your vault";
-  $("#saveButton").textContent = item ? "Save changes" : "Add to collection";
+  $("#saveButton").textContent = item ? "Save changes" : "Add to library";
   $("#deleteButton").hidden = !item;
   $('[name="title"]').readOnly = Boolean(item);
   $('[name="year"]').readOnly = Boolean(item);

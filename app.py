@@ -240,7 +240,7 @@ def clean_payload(payload: dict) -> dict:
     if item_format not in FORMATS:
         raise ValueError("Invalid format.")
     if status not in STATUSES:
-        raise ValueError("Invalid collection status.")
+        raise ValueError("Invalid library status.")
     if condition not in CONDITIONS:
         raise ValueError("Invalid condition.")
 

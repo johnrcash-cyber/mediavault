@@ -15,7 +15,7 @@ python app.py
 
 Then open `http://127.0.0.1:5050`. Set `PORT` if you prefer another port.
 
-Collection data is stored in `data/mediavault.db`. Set `MEDIAVAULT_DATABASE` to use a different SQLite file.
+Library data is stored in `data/mediavault.db`. Set `MEDIAVAULT_DATABASE` to use a different SQLite file.
 
 ## Local HTTPS
 
@@ -58,7 +58,7 @@ Open it locally at `http://127.0.0.1:5050`.
 
 - Dashboard counts and recently added items
 - Instant title, UPC, tag, and location search
-- Filters by media type and collection status
+- Filters by media type and library status
 - Add, edit, and remove catalog entries
 - Purchase details, physical locations, notes, and tags
 - Responsive dark interface for desktop and mobile
@@ -76,7 +76,7 @@ only attached, created, or ignored when you explicitly choose that action.
 Selecting a catalog item opens Quick View. Attached Jellyfin metadata—artwork,
 overview, genres, runtime, rating, credits, studio, and release date—is read-only
 and can be refreshed independently. **Edit** changes only MediaVault-owned
-collection, purchase, location, tag, and note fields.
+library, purchase, location, tag, and note fields.
 
 ## Metadata enrichment
 
@@ -103,7 +103,7 @@ and reports processed, enriched, skipped, and failed counts by category.
 Per-item refresh uses the same priority rules. Jellyfin is displayed only as a
 library/source indicator, never as the metadata provider.
 
-Enriched metadata also appears throughout the collection grid and Dashboard
+Enriched metadata also appears throughout the library grid and Dashboard
 Recently Added cards, including poster art, short summaries, runtime, rating,
 provider, and attached source badges. Unenriched items retain MediaVault's
 original artwork placeholder.
