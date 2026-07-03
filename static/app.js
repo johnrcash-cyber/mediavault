@@ -1,7 +1,10 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => document.querySelectorAll(selector);
 const savedDisplayView = localStorage.getItem("mediavault_display_view");
-const state = { query: "", type: "", status: "", origin: "", view: "dashboard", displayView: ["poster", "list"].includes(savedDisplayView) ? savedDisplayView : "poster", items: [], wishlistItems: [], wishlistDetailItem: null, returnToWishlistDetail: false, jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviderPriority: "musicbrainz,discogs,coverartarchive,lastfm", musicProviders: ["musicbrainz"], settingsTab: "metadata", catalogPreview: null, catalogCategory: "new_items" };
+const sortableKeys = ["title", "year", "media_type", "runtime", "format", "status", "provider", "rating", "enrichment"];
+const savedSortKey = localStorage.getItem("mediavault_sort_key");
+const savedSortDirection = localStorage.getItem("mediavault_sort_direction");
+const state = { query: "", type: "", status: "", origin: "", view: "dashboard", displayView: ["poster", "list"].includes(savedDisplayView) ? savedDisplayView : "poster", sortKey: sortableKeys.includes(savedSortKey) ? savedSortKey : "", sortDirection: ["asc", "desc"].includes(savedSortDirection) ? savedSortDirection : "asc", items: [], wishlistItems: [], wishlistDetailItem: null, returnToWishlistDetail: false, jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviderPriority: "musicbrainz,discogs,coverartarchive,lastfm", musicProviders: ["musicbrainz"], settingsTab: "metadata", catalogPreview: null, catalogCategory: "new_items" };
 const typeIcons = { Movies: "▶", Television: "TV", Music: "♫", Games: "✦", Books: "B", Other: "MV" };
 
 async function api(url, options = {}) {
@@ -87,25 +90,113 @@ function syncDisplayViewControls() {
   });
 }
 
+function compactSortableListItem(item, options = {}) {
+  const isWishlist = Boolean(options.wishlist);
+  const provider = item.metadata_provider || "";
+  const enrichment = item.enrichment_status || item.metadata_status || "";
+  const status = isWishlist
+    ? `${item.status || "Open"} · Not owned`
+    : (item.status || "Unassigned");
+  return `<article class="compact-media-row sortable-row media-item-entry${isWishlist ? " wishlist-item-entry wishlist-sortable-row" : ""}" ${isWishlist ? `data-wishlist-id="${item.id}"` : `data-id="${item.id}"`}>
+    <div class="compact-media-poster type-${escapeHtml(item.media_type)}">${item.poster_url ? `<img src="${escapeHtml(item.poster_url)}" alt="" loading="lazy">` : `<span>${typeIcons[item.media_type] || "MV"}</span>`}</div>
+    <div class="compact-media-title"><strong>${escapeHtml(item.title)}</strong>${item.artist ? `<small>${escapeHtml(item.artist)}</small>` : ""}</div>
+    <div class="compact-list-value numeric">${item.year || "—"}</div>
+    <div class="compact-list-value">${escapeHtml(item.media_type || "—")}</div>
+    <div class="compact-list-value numeric">${item.runtime_minutes ? `${item.runtime_minutes} min` : "—"}</div>
+    <div class="compact-list-value">${escapeHtml(item.format || "—")}</div>
+    <div class="compact-media-status"><strong>${escapeHtml(status)}</strong></div>
+    <div class="compact-list-value provider-value">${escapeHtml(provider || "—")}</div>
+    <div class="compact-media-rating">${item.rating !== null && item.rating !== undefined && item.rating !== "" ? `★ ${Number(item.rating).toFixed(1)}` : "—"}</div>
+    ${isWishlist ? `<div class="compact-list-value enrichment-value">${escapeHtml(enrichment || "—")}</div>` : ""}
+  </article>`;
+}
+
+function sortHeaderButton(key, label) {
+  const active = state.sortKey === key;
+  const arrow = active ? (state.sortDirection === "asc" ? " ↑" : " ↓") : "";
+  return `<button type="button" data-sort-key="${key}" class="${active ? "active" : ""}" aria-label="Sort by ${label}">${label}${arrow}</button>`;
+}
+
+function compactListHeader(isWishlist = false) {
+  return `<div class="compact-list-header${isWishlist ? " wishlist-sortable-row" : ""}">
+    <span aria-hidden="true"></span>
+    ${sortHeaderButton("title", "Title")}
+    ${sortHeaderButton("year", "Year")}
+    ${sortHeaderButton("media_type", "Media Type")}
+    ${sortHeaderButton("runtime", "Runtime")}
+    ${sortHeaderButton("format", "Format")}
+    ${sortHeaderButton("status", "Status")}
+    ${sortHeaderButton("provider", "Provider")}
+    ${sortHeaderButton("rating", "Rating")}
+    ${isWishlist ? sortHeaderButton("enrichment", "Enrichment") : ""}
+  </div>`;
+}
+
+function sortValue(item, key, isWishlist) {
+  if (key === "runtime") return item.runtime_minutes;
+  if (key === "provider") return item.metadata_provider;
+  if (key === "enrichment") return item.enrichment_status || item.metadata_status;
+  if (key === "status" && isWishlist) return item.status || "Open";
+  return item[key];
+}
+
+function sortedListItems(items, isWishlist = false) {
+  if (!state.sortKey) return [...items];
+  const numericKeys = new Set(["year", "runtime", "rating"]);
+  return items.map((item, index) => ({ item, index })).sort((left, right) => {
+    const a = sortValue(left.item, state.sortKey, isWishlist);
+    const b = sortValue(right.item, state.sortKey, isWishlist);
+    const aMissing = a === null || a === undefined || a === "";
+    const bMissing = b === null || b === undefined || b === "";
+    if (aMissing !== bMissing) return aMissing ? 1 : -1;
+    if (aMissing && bMissing) return left.index - right.index;
+    let comparison;
+    if (numericKeys.has(state.sortKey)) {
+      comparison = Number(a) - Number(b);
+    } else {
+      comparison = String(a).localeCompare(String(b), undefined, {
+        sensitivity: "base", numeric: true,
+      });
+    }
+    if (comparison === 0) return left.index - right.index;
+    return state.sortDirection === "asc" ? comparison : -comparison;
+  }).map(({ item }) => item);
+}
+
+function setSortKey(key) {
+  if (!sortableKeys.includes(key)) return;
+  if (state.sortKey === key) {
+    state.sortDirection = state.sortDirection === "asc" ? "desc" : "asc";
+  } else {
+    state.sortKey = key;
+    state.sortDirection = "asc";
+  }
+  localStorage.setItem("mediavault_sort_key", state.sortKey);
+  localStorage.setItem("mediavault_sort_direction", state.sortDirection);
+  if (state.view === "collection") renderCollectionItems();
+  if (state.view === "wishlist") renderWishlistItems();
+}
+
 function renderCollectionItems() {
   const container = $("#collectionGrid");
   container.classList.toggle("compact-list", state.displayView === "list");
   container.innerHTML = state.items.length
-    ? state.items.map((item) => state.displayView === "list"
-      ? compactListItem(item) : card(item)).join("")
+    ? (state.displayView === "list"
+      ? compactListHeader() + sortedListItems(state.items).map((item) =>
+        compactSortableListItem(item)).join("")
+      : state.items.map(card).join(""))
     : emptyState(Boolean(state.query || state.type || state.status));
 }
 
 function renderWishlistItems() {
   const container = $("#wishlistGrid");
   container.classList.toggle("compact-list", state.displayView === "list");
+  const mappedItems = state.wishlistItems.map(wishlistCardData);
   container.innerHTML = state.wishlistItems.length
-    ? state.wishlistItems.map((item) => {
-      const mapped = wishlistCardData(item);
-      return state.displayView === "list"
-        ? compactListItem(mapped, { wishlist: true })
-        : card(mapped, { wishlist: true });
-    }).join("")
+    ? (state.displayView === "list"
+      ? compactListHeader(true) + sortedListItems(mappedItems, true).map((item) =>
+        compactSortableListItem(item, { wishlist: true })).join("")
+      : mappedItems.map((item) => card(item, { wishlist: true })).join(""))
     : `<div class="empty-state"><strong>Your Wishlist is empty.</strong><span>Add a title you want to remember.</span><br><button class="button primary" data-add-wishlist>＋ Add Wishlist Item</button></div>`;
 }
 
@@ -816,6 +907,11 @@ function toast(message, duration = 2200) {
 }
 
 document.addEventListener("click", async (event) => {
+  const sortButton = event.target.closest("[data-sort-key]");
+  if (sortButton) {
+    setSortKey(sortButton.dataset.sortKey);
+    return;
+  }
   const displayViewButton = event.target.closest("[data-display-view]");
   if (displayViewButton) {
     setDisplayView(displayViewButton.dataset.displayView);
