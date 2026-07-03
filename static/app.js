@@ -18,7 +18,8 @@ function escapeHtml(value = "") {
   return div.innerHTML;
 }
 
-function card(item) {
+function card(item, options = {}) {
+  const isWishlist = Boolean(options.wishlist);
   const statusClass = item.status === "Archived" ? "archived" : "";
   const providerClass = (item.metadata_provider || "").toLowerCase();
   const detailBits = [
@@ -30,17 +31,21 @@ function card(item) {
   const sourceBadges = (item.sources || []).map((source) =>
     `<span class="mini-badge source">${escapeHtml(source)}</span>`
   ).join("");
-  return `<article class="media-card type-${escapeHtml(item.media_type)}" data-id="${item.id}">
+  const summary = item.overview || item.notes || "";
+  const enrichmentStatus = item.enrichment_status || item.metadata_status || "";
+  return `<article class="media-card type-${escapeHtml(item.media_type)}${isWishlist ? " wishlist-card" : ""}" ${isWishlist ? `data-wishlist-id="${item.id}"` : `data-id="${item.id}"`}>
     <div class="cover ${item.poster_url ? "has-poster" : ""}">
       ${item.poster_url ? `<img src="${escapeHtml(item.poster_url)}" alt="" loading="lazy">` : `<span class="cover-icon">${typeIcons[item.media_type] || "MV"}</span>`}
+      ${isWishlist ? '<span class="wishlist-badge">♡ Wishlist</span>' : ""}
       ${item.metadata_provider ? `<span class="provider-badge ${providerClass}">${escapeHtml(item.metadata_provider)}</span>` : ""}
-      <span class="format-badge">${escapeHtml(item.format)}</span>
+      ${item.format ? `<span class="format-badge">${escapeHtml(item.format)}</span>` : ""}
     </div>
     <div class="card-body"><h3 title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</h3>
       <p class="card-details">${escapeHtml(detailBits)}</p>
-      ${item.overview ? `<p class="card-summary">${escapeHtml(item.overview)}</p>` : '<p class="card-summary empty">Metadata summary not available.</p>'}
+      ${summary ? `<p class="card-summary">${escapeHtml(summary)}</p>` : `<p class="card-summary empty">${enrichmentStatus === "Pending" ? "Metadata pending…" : enrichmentStatus === "Failed" ? "Metadata enrichment failed." : "Metadata not found."}</p>`}
       ${sourceBadges ? `<div class="card-sources">${sourceBadges}</div>` : ""}
-      <div class="card-meta"><span class="status-pill ${statusClass}">${escapeHtml(item.status)}</span><span class="rating">${item.rating ? `★ ${Number(item.rating).toFixed(1)}` : escapeHtml(item.physical_location || item.condition || "")}</span></div>
+      ${isWishlist ? `<div class="card-meta wishlist-card-meta"><span class="wishlist-not-owned">♡ Not owned</span><span class="wishlist-card-actions"><button class="text-button" data-wishlist-action="edit">Edit</button><button class="text-button danger-text" data-wishlist-action="delete">Delete</button></span></div>` : ""}
+      <div class="catalog-card-meta card-meta"><span class="status-pill ${statusClass}">${escapeHtml(item.status)}</span><span class="rating">${item.rating ? `★ ${Number(item.rating).toFixed(1)}` : escapeHtml(item.physical_location || item.condition || "")}</span></div>
     </div></article>`;
 }
 
@@ -81,12 +86,39 @@ function wishlistRow(item) {
   </article>`;
 }
 
+function wishlistCardData(item) {
+  const mediaTypes = {
+    Movie: "Movies", Television: "Television", Music: "Music",
+    Game: "Games", Book: "Books", Other: "Other",
+  };
+  return {
+    ...item,
+    media_type: mediaTypes[item.media_type] || item.media_type || "Other",
+    metadata_provider: item.provider || "",
+    format: "",
+    sources: [],
+  };
+}
+
+let wishlistRefreshTimer;
 async function loadWishlist() {
   state.wishlistItems = await api("/api/wishlist");
   $("#wishlistCount").textContent = `${state.wishlistItems.length} ${state.wishlistItems.length === 1 ? "item" : "items"}`;
   $("#wishlistGrid").innerHTML = state.wishlistItems.length
-    ? state.wishlistItems.map(wishlistRow).join("")
+    ? state.wishlistItems.map((item) =>
+      card(wishlistCardData(item), { wishlist: true })
+    ).join("")
     : `<div class="empty-state"><strong>Your Wishlist is empty.</strong><span>Add a title you want to remember.</span><br><button class="button primary" data-add-wishlist>＋ Add Wishlist Item</button></div>`;
+  scheduleWishlistRefresh();
+}
+
+function scheduleWishlistRefresh() {
+  clearTimeout(wishlistRefreshTimer);
+  if (state.view === "wishlist" && state.wishlistItems.some((item) =>
+    (item.enrichment_status || item.metadata_status) === "Pending"
+  )) {
+    wishlistRefreshTimer = setTimeout(loadWishlist, 2500);
+  }
 }
 
 function setView(view, filters = {}) {
@@ -105,6 +137,7 @@ function setView(view, filters = {}) {
   $(".sidebar").classList.remove("open");
   if (view === "collection") loadCollection();
   if (view === "wishlist") loadWishlist();
+  else clearTimeout(wishlistRefreshTimer);
   if (view === "settings") {
     setSettingsTab(state.settingsTab);
     Promise.all([loadProviderSettings(), loadSourceStatus(), loadSources()]);
@@ -747,7 +780,7 @@ document.addEventListener("click", async (event) => {
     }
     return;
   }
-  const mediaCard = event.target.closest(".media-card");
+  const mediaCard = event.target.closest(".media-card[data-id]");
   if (mediaCard) {
     try { await openQuickView(mediaCard.dataset.id); } catch (error) { toast(error.message); }
   }

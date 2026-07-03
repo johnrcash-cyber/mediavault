@@ -189,6 +189,15 @@ def init_db() -> None:
             notes TEXT,
             status TEXT NOT NULL DEFAULT 'Open',
             metadata_status TEXT NOT NULL DEFAULT 'Pending',
+            poster_url TEXT,
+            overview TEXT,
+            genres TEXT,
+            runtime_minutes INTEGER,
+            provider TEXT,
+            provider_id TEXT,
+            enriched_at TEXT,
+            enrichment_status TEXT NOT NULL DEFAULT 'Pending',
+            enrichment_error TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -206,6 +215,15 @@ def init_db() -> None:
         "notes": "TEXT",
         "status": "TEXT DEFAULT 'Open'",
         "metadata_status": "TEXT DEFAULT 'Pending'",
+        "poster_url": "TEXT",
+        "overview": "TEXT",
+        "genres": "TEXT",
+        "runtime_minutes": "INTEGER",
+        "provider": "TEXT",
+        "provider_id": "TEXT",
+        "enriched_at": "TEXT",
+        "enrichment_status": "TEXT DEFAULT 'Pending'",
+        "enrichment_error": "TEXT",
         "created_at": "TEXT",
         "updated_at": "TEXT",
     }
@@ -222,6 +240,10 @@ def init_db() -> None:
     connection.execute(
         "UPDATE wishlist_items SET metadata_status = 'Pending' "
         "WHERE metadata_status IS NULL OR metadata_status = ''"
+    )
+    connection.execute(
+        "UPDATE wishlist_items SET enrichment_status = metadata_status "
+        "WHERE enrichment_status IS NULL OR enrichment_status = ''"
     )
     connection.execute(
         "UPDATE wishlist_items SET created_at = ? "
@@ -280,7 +302,12 @@ def row_to_card_dict(row: sqlite3.Row) -> dict:
 
 
 def wishlist_to_dict(row: sqlite3.Row) -> dict:
-    return dict(row)
+    item = dict(row)
+    try:
+        item["genres"] = json.loads(item.get("genres") or "[]")
+    except json.JSONDecodeError:
+        item["genres"] = []
+    return item
 
 
 def clean_wishlist_payload(payload: dict) -> dict:
@@ -304,6 +331,116 @@ def clean_wishlist_payload(payload: dict) -> dict:
         "media_type": media_type,
         "notes": str(payload.get("notes", "")).strip(),
     }
+
+
+def enrich_wishlist_item(item_id: int) -> dict:
+    """Enrich a wishlist row without ever creating or changing catalog media."""
+    item = db().execute(
+        "SELECT * FROM wishlist_items WHERE id = ? AND status = 'Open'",
+        (item_id,),
+    ).fetchone()
+    if item is None:
+        raise ValueError("Wishlist item not found.")
+
+    metadata = None
+    errors = []
+    if item["media_type"] == "Movie":
+        for provider in provider_order():
+            try:
+                external_id = find_provider_movie(
+                    provider, item["title"], item["year"]
+                )
+                if external_id:
+                    metadata = fetch_provider_movie(provider, external_id)
+                    break
+            except (ValueError, urllib.error.URLError) as exc:
+                errors.append(f"{provider}: {exc}")
+    elif item["media_type"] == "Music":
+        fetchers = {
+            "musicbrainz": fetch_musicbrainz_release,
+            "discogs": fetch_discogs_release,
+            "lastfm": fetch_lastfm_album,
+        }
+        for provider in music_provider_order():
+            try:
+                external_id = find_music_release(
+                    provider, item["title"], "", item["year"]
+                )
+                if external_id:
+                    metadata = fetchers[provider](external_id)
+                    break
+            except (ValueError, urllib.error.URLError) as exc:
+                errors.append(f"{provider}: {exc}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    if metadata:
+        db().execute(
+            """
+            UPDATE wishlist_items SET
+                year = COALESCE(year, ?), poster_url = ?, overview = ?,
+                genres = ?, runtime_minutes = ?, provider = ?,
+                provider_id = ?, enriched_at = ?, metadata_status = 'Found',
+                enrichment_status = 'Found', enrichment_error = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                metadata.get("year"),
+                metadata.get("poster_url") or "",
+                metadata.get("overview") or "",
+                json.dumps(metadata.get("genres") or []),
+                metadata.get("runtime_minutes"),
+                metadata.get("metadata_source") or "",
+                metadata.get("external_id") or "",
+                now, now, item_id,
+            ),
+        )
+    else:
+        message = "; ".join(errors) or "No matching metadata was found."
+        status = "Failed" if errors else "Not Found"
+        db().execute(
+            """
+            UPDATE wishlist_items SET metadata_status = ?,
+                enrichment_status = ?, enrichment_error = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (status, status, message, now, item_id),
+        )
+    db().commit()
+    row = db().execute(
+        "SELECT * FROM wishlist_items WHERE id = ?", (item_id,)
+    ).fetchone()
+    return wishlist_to_dict(row)
+
+
+def enrich_wishlist_item_async(item_id: int) -> None:
+    def worker():
+        with app.app_context():
+            try:
+                enrich_wishlist_item(item_id)
+            except Exception:
+                app.logger.exception(
+                    "Wishlist metadata enrichment failed for item_id=%s", item_id
+                )
+                try:
+                    now = datetime.now(timezone.utc).isoformat()
+                    db().execute(
+                        """
+                        UPDATE wishlist_items SET metadata_status = 'Failed',
+                            enrichment_status = 'Failed',
+                            enrichment_error = ?, updated_at = ? WHERE id = ?
+                        """,
+                        ("Unexpected metadata enrichment error.", now, item_id),
+                    )
+                    db().commit()
+                except sqlite3.Error:
+                    app.logger.exception(
+                        "Could not persist wishlist enrichment failure."
+                    )
+
+    threading.Thread(
+        target=worker, daemon=True, name=f"wishlist-enrich-{item_id}"
+    ).start()
 
 
 def clean_payload(payload: dict) -> dict:
@@ -1936,7 +2073,9 @@ def create_wishlist_item():
         row = db().execute(
             "SELECT * FROM wishlist_items WHERE id = ?", (cursor.lastrowid,)
         ).fetchone()
-        return jsonify(wishlist_to_dict(row)), 201
+        response = wishlist_to_dict(row)
+        enrich_wishlist_item_async(cursor.lastrowid)
+        return jsonify(response), 201
     except sqlite3.Error:
         db().rollback()
         app.logger.exception(
@@ -1957,7 +2096,11 @@ def update_wishlist_item(item_id: int):
     cursor = db().execute(
         """
         UPDATE wishlist_items SET title = ?, year = ?, media_type = ?,
-            notes = ?, updated_at = ?
+            notes = ?, poster_url = NULL, overview = NULL, genres = NULL,
+            runtime_minutes = NULL, provider = NULL, provider_id = NULL,
+            enriched_at = NULL, metadata_status = 'Pending',
+            enrichment_status = 'Pending', enrichment_error = NULL,
+            updated_at = ?
         WHERE id = ? AND status = 'Open'
         """,
         (
@@ -1971,7 +2114,9 @@ def update_wishlist_item(item_id: int):
     row = db().execute(
         "SELECT * FROM wishlist_items WHERE id = ?", (item_id,)
     ).fetchone()
-    return jsonify(wishlist_to_dict(row))
+    response = wishlist_to_dict(row)
+    enrich_wishlist_item_async(item_id)
+    return jsonify(response)
 
 
 @app.delete("/api/wishlist/<int:item_id>")
