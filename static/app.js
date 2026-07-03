@@ -401,6 +401,7 @@ function jellyfinConfigurationMarkup(source = {}) {
     <label>Server Name<input class="jf-source-name" value="${escapeHtml(source.name === "New Jellyfin Source" ? "" : source.name || "")}" placeholder="Home Jellyfin"></label>
   </div>
   <div class="source-config-section"><div class="source-config-heading"><div><strong>Enabled libraries</strong><small>Choose which libraries feed MediaVault.</small></div><button class="text-button" data-source-action="refresh-libraries">Refresh Libraries</button></div><div class="source-library-list"><span class="source-panel-note">Refresh to discover libraries.</span></div></div>
+  <div class="source-config-section"><label class="toggle-label"><input type="checkbox" class="jf-use-metadata" ${details.use_metadata !== false ? "checked" : ""}> Use Jellyfin metadata when available</label><p class="source-panel-note">Jellyfin syncs library items and provides metadata when available. External providers fill any gaps.</p></div>
   <div class="source-automation-row"><label class="toggle-label"><input type="checkbox" class="jf-source-auto" ${details.auto_sync ? "checked" : ""}> Automation enabled</label><label>Sync frequency<select class="jf-source-frequency">${frequencies.map(([value,label]) => `<option value="${value}" ${details.frequency === value ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>
   <p class="form-error source-config-error"></p>
   <div class="source-panel-actions"><button class="button secondary" data-source-action="test">Test Connection</button><button class="button primary" data-source-action="save">Save</button><button class="button secondary" data-source-action="sync">Sync Now</button><button class="text-button" data-source-action="disable">Disable</button><button class="text-button danger-text" data-source-action="delete">Delete</button></div>`;
@@ -421,7 +422,7 @@ async function loadSourceAccordion(card) {
 }
 
 function sourceJellyfinPayload(card) {
-  return { server_url: card.querySelector(".jf-source-url").value.trim(), api_key: card.querySelector(".jf-source-key").value.trim(), server_name: card.querySelector(".jf-source-name").value.trim() };
+  return { server_url: card.querySelector(".jf-source-url").value.trim(), api_key: card.querySelector(".jf-source-key").value.trim(), server_name: card.querySelector(".jf-source-name").value.trim(), use_metadata: card.querySelector(".jf-use-metadata")?.checked !== false };
 }
 
 async function saveSourceLibraries(card) {

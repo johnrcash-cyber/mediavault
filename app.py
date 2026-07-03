@@ -95,12 +95,24 @@ def init_db() -> None:
             source_year INTEGER,
             action TEXT NOT NULL CHECK(action IN ('attached', 'created', 'ignored')),
             metadata_json TEXT,
+            source_updated_at TEXT,
+            source_metadata_updated_at TEXT,
             created_at TEXT NOT NULL,
             UNIQUE(server_url, jellyfin_item_id),
             FOREIGN KEY(media_id) REFERENCES media(id) ON DELETE RESTRICT
         )
         """
     )
+    jellyfin_source_columns = {
+        row[1] for row in connection.execute(
+            "PRAGMA table_info(jellyfin_sources)"
+        ).fetchall()
+    }
+    for column in ("source_updated_at", "source_metadata_updated_at"):
+        if column not in jellyfin_source_columns:
+            connection.execute(
+                f"ALTER TABLE jellyfin_sources ADD COLUMN {column} TEXT"
+            )
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS metadata_attachments (
@@ -507,6 +519,7 @@ def jellyfin_settings() -> dict:
         "server_url": values.get("jellyfin_server_url", ""),
         "api_key": values.get("jellyfin_api_key", ""),
         "server_name": values.get("jellyfin_server_name", ""),
+        "use_metadata": values.get("jellyfin_use_metadata", "1") != "0",
     }
 
 
@@ -658,22 +671,15 @@ def discover_jellyfin_libraries() -> list[dict]:
 
 
 def jellyfin_item_source(raw: dict, library: sqlite3.Row) -> dict:
-    runtime_ticks = raw.get("RunTimeTicks") or 0
-    artists = raw.get("Artists") or []
-    artist = raw.get("AlbumArtist") or ", ".join(artists)
-    return {
-        "jellyfin_item_id": str(raw.get("Id", "")),
-        "library_id": library["library_id"],
-        "library_name": library["name"],
-        "title": raw.get("Name") or "Untitled",
-        "year": raw.get("ProductionYear"),
-        "artist": artist,
-        "genres": raw.get("Genres") or [],
-        "track_count": raw.get("ChildCount"),
-        "duration_seconds": round(runtime_ticks / 10_000_000) if runtime_ticks else None,
-        "provider_ids": raw.get("ProviderIds") or {},
-        "path": raw.get("Path") or "",
-    }
+    normalized = normalize_jellyfin_item(
+        raw,
+        {"id": library["library_id"], "name": library["name"]},
+    )
+    normalized["source_updated_at"] = raw.get("DateLastSaved") or raw.get("DateCreated")
+    normalized["source_metadata_updated_at"] = (
+        raw.get("DateLastRefreshed") or raw.get("DateLastSaved")
+    )
+    return normalized
 
 
 def sync_jellyfin_libraries() -> dict:
@@ -711,8 +717,11 @@ def sync_jellyfin_libraries() -> dict:
                     "ParentId": library["library_id"],
                     "IncludeItemTypes": include_type,
                     "Recursive": "true",
-                    "Fields": "ProviderIds,Path,Genres,RunTimeTicks,"
-                              "AlbumArtist,Artists,ChildCount",
+                    "Fields": "Overview,Genres,RunTimeTicks,CommunityRating,"
+                              "People,Studios,PremiereDate,ProviderIds,Path,"
+                              "ImageTags,BackdropImageTags,Album,AlbumArtist,"
+                              "Artists,ChildCount,DateCreated,DateLastSaved,"
+                              "DateLastRefreshed",
                 },
             )
             for raw in response.get("Items", []):
@@ -739,12 +748,16 @@ def sync_jellyfin_libraries() -> dict:
                             """
                             UPDATE jellyfin_sources
                             SET jellyfin_library_id = ?, jellyfin_library_name = ?,
-                                source_title = ?, source_year = ?, metadata_json = ?
+                                source_title = ?, source_year = ?, metadata_json = ?,
+                                source_updated_at = ?,
+                                source_metadata_updated_at = ?
                             WHERE id = ?
                             """,
                             (
                                 library["library_id"], library["name"],
                                 source["title"], source["year"], source_json,
+                                source.get("source_updated_at"),
+                                source.get("source_metadata_updated_at"),
                                 existing_source["id"],
                             ),
                         )
@@ -754,7 +767,7 @@ def sync_jellyfin_libraries() -> dict:
                         result["skipped"] += 1
                         library_result["skipped"] += 1
                     media_id = existing_source["media_id"]
-                    if media_id and category in ("Movies", "Music"):
+                    if media_id and category in ("Movies", "Television", "Music"):
                         attachment = db().execute(
                             "SELECT metadata_json FROM metadata_attachments "
                             "WHERE media_id = ?",
@@ -768,7 +781,9 @@ def sync_jellyfin_libraries() -> dict:
                                 ).get("poster_url")
                             except json.JSONDecodeError:
                                 needs_metadata = True
-                        if needs_metadata:
+                        if needs_metadata or (
+                            changed and settings.get("use_metadata", True)
+                        ):
                             try:
                                 enrich_media_item(media_id)
                             except (ValueError, LookupError, sqlite3.Error):
@@ -822,17 +837,20 @@ def sync_jellyfin_libraries() -> dict:
                         jellyfin_item_id, jellyfin_library_id,
                         jellyfin_library_name, server_url, media_id,
                         source_title, source_year, action,
-                        metadata_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        metadata_json, source_updated_at,
+                        source_metadata_updated_at, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         source["jellyfin_item_id"], library["library_id"],
                         library["name"], server_url, media_id,
                         source["title"], source["year"], action,
-                        json.dumps(source, separators=(",", ":")), now,
+                        json.dumps(source, separators=(",", ":")),
+                        source.get("source_updated_at"),
+                        source.get("source_metadata_updated_at"), now,
                     ),
                 )
-                if category in ("Movies", "Music"):
+                if category in ("Movies", "Television", "Music"):
                     try:
                         enrich_media_item(media_id)
                     except (ValueError, LookupError, sqlite3.Error):
@@ -876,15 +894,21 @@ def normalize_jellyfin_item(raw: dict, library: dict | None = None) -> dict:
     cast = [person.get("Name") for person in people if person.get("Type") == "Actor"][:12]
     studios = raw.get("Studios") or []
     runtime_ticks = raw.get("RunTimeTicks") or 0
+    item_id = str(raw.get("Id", ""))
+    artists = raw.get("Artists") or []
+    artist = raw.get("AlbumArtist") or ", ".join(artists)
     return {
-        "jellyfin_item_id": str(raw.get("Id", "")),
+        "jellyfin_item_id": item_id,
         "library_id": (library or {}).get("id", ""),
         "library_name": (library or {}).get("name", ""),
         "title": raw.get("Name") or "Untitled",
+        "album_title": raw.get("Album") or raw.get("Name") or "Untitled",
+        "artist": artist,
         "year": raw.get("ProductionYear"),
         "overview": raw.get("Overview") or "",
         "genres": raw.get("Genres") or [],
         "runtime_minutes": round(runtime_ticks / 600_000_000) if runtime_ticks else None,
+        "duration_seconds": round(runtime_ticks / 10_000_000) if runtime_ticks else None,
         "rating": raw.get("CommunityRating"),
         "director": ", ".join(filter(None, directors)),
         "cast": list(filter(None, cast)),
@@ -892,10 +916,21 @@ def normalize_jellyfin_item(raw: dict, library: dict | None = None) -> dict:
             studio.get("Name", "") for studio in studios if studio.get("Name")
         ),
         "release_date": (raw.get("PremiereDate") or "")[:10],
+        "track_count": raw.get("ChildCount"),
         "provider_ids": raw.get("ProviderIds") or {},
         "path": raw.get("Path") or "",
         "has_poster": bool((raw.get("ImageTags") or {}).get("Primary")),
         "has_backdrop": bool(raw.get("BackdropImageTags")),
+        "poster_url": (
+            f"/api/jellyfin/image/{urllib.parse.quote(item_id)}/Primary"
+            if item_id and (raw.get("ImageTags") or {}).get("Primary") else ""
+        ),
+        "backdrop_url": (
+            f"/api/jellyfin/image/{urllib.parse.quote(item_id)}/Backdrop"
+            if item_id and raw.get("BackdropImageTags") else ""
+        ),
+        "external_id": item_id,
+        "metadata_source": "Jellyfin",
     }
 
 
@@ -1423,6 +1458,28 @@ def fetch_provider_movie(provider: str, external_id: str) -> dict:
     raise ValueError("Unsupported movie metadata provider.")
 
 
+def fetch_provider_title(
+    provider: str, external_id: str, media_type: str
+) -> dict:
+    if media_type != "Television":
+        return fetch_provider_movie(provider, external_id)
+    if provider == "omdb":
+        if not re.fullmatch(r"tt\d{7,10}", str(external_id)):
+            raise ValueError("Invalid IMDb ID.")
+        return normalize_omdb_movie(
+            omdb_request({"i": external_id, "plot": "full"})
+        )
+    if provider == "tmdb":
+        if not str(external_id).isdigit():
+            raise ValueError("Invalid TMDB television ID.")
+        raw = tmdb_request(
+            f"/tv/{external_id}",
+            {"language": "en-US", "append_to_response": "credits"},
+        )
+        return normalize_tmdb_movie(raw)
+    raise ValueError("Unsupported television metadata provider.")
+
+
 def provider_order() -> list[str]:
     configured = provider_settings()
     order = [
@@ -1546,6 +1603,143 @@ def find_music_release(
     return None
 
 
+def metadata_value_present(value) -> bool:
+    return value not in (None, "", [], {})
+
+
+def fill_metadata_gaps(primary: dict, fallback: dict) -> dict:
+    merged = dict(primary or {})
+    for key, value in (fallback or {}).items():
+        if not metadata_value_present(merged.get(key)) and metadata_value_present(value):
+            merged[key] = value
+    return merged
+
+
+def jellyfin_provider_id(provider_ids: dict, *names: str) -> str | None:
+    lowered = {str(key).casefold(): value for key, value in (provider_ids or {}).items()}
+    for name in names:
+        value = lowered.get(name.casefold())
+        if metadata_value_present(value):
+            return str(value)
+    return None
+
+
+def find_provider_title(
+    provider: str, title: str, year: int | None, media_type: str
+) -> str | None:
+    if media_type != "Television":
+        return find_provider_movie(provider, title, year)
+    target = normalized_title(title)
+    if provider == "omdb":
+        params = {"s": title, "type": "series", "page": 1}
+        if year:
+            params["y"] = str(year)
+        try:
+            response = omdb_request(params)
+        except ValueError as exc:
+            if "not found" in str(exc).casefold():
+                return None
+            raise
+        for candidate in response.get("Search", []):
+            candidate_year = str(candidate.get("Year") or "")[:4]
+            if normalized_title(candidate.get("Title") or "") == target and (
+                not year or not candidate_year.isdigit() or int(candidate_year) == year
+            ):
+                return candidate.get("imdbID")
+        return None
+    if provider == "tmdb":
+        params = {
+            "query": title, "include_adult": "false",
+            "language": "en-US", "page": 1,
+        }
+        if year:
+            params["first_air_date_year"] = str(year)
+        response = tmdb_request("/search/tv", params)
+        for candidate in response.get("results", []):
+            candidate_year = str(candidate.get("first_air_date") or "")[:4]
+            if normalized_title(candidate.get("name") or "") == target and (
+                not year or not candidate_year.isdigit() or int(candidate_year) == year
+            ):
+                return str(candidate.get("id"))
+        return None
+    return None
+
+
+def current_jellyfin_metadata(source: sqlite3.Row) -> dict:
+    cached = json.loads(source["metadata_json"] or "{}")
+    settings = jellyfin_settings()
+    try:
+        raw = jellyfin_request(
+            settings,
+            f"/Items/{urllib.parse.quote(source['jellyfin_item_id'])}",
+            {
+                "Fields": "Overview,Genres,RunTimeTicks,CommunityRating,People,"
+                          "Studios,PremiereDate,ProviderIds,Path,ImageTags,"
+                          "BackdropImageTags,Album,AlbumArtist,Artists,ChildCount,"
+                          "DateCreated,DateLastSaved,DateLastRefreshed",
+            },
+        )
+        fresh = normalize_jellyfin_item(
+            raw,
+            {
+                "id": source["jellyfin_library_id"],
+                "name": source["jellyfin_library_name"],
+            },
+        )
+        fresh["source_updated_at"] = raw.get("DateLastSaved") or raw.get("DateCreated")
+        fresh["source_metadata_updated_at"] = (
+            raw.get("DateLastRefreshed") or raw.get("DateLastSaved")
+        )
+        metadata = fill_metadata_gaps(fresh, cached)
+        db().execute(
+            """
+            UPDATE jellyfin_sources
+            SET source_title = ?, source_year = ?, metadata_json = ?,
+                source_updated_at = ?, source_metadata_updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                metadata.get("title") or source["source_title"],
+                metadata.get("year"),
+                json.dumps(metadata, separators=(",", ":")),
+                metadata.get("source_updated_at"),
+                metadata.get("source_metadata_updated_at"),
+                source["id"],
+            ),
+        )
+        return metadata
+    except (ValueError, json.JSONDecodeError) as exc:
+        app.logger.warning(
+            "Jellyfin metadata fetch failed item_id=%s error=%s; using cached source data",
+            source["jellyfin_item_id"], exc,
+        )
+        return cached
+
+
+def save_metadata_attachment(
+    item_id: int, provider: str, external_id: str, metadata: dict
+) -> tuple[str, dict]:
+    now = datetime.now(timezone.utc).isoformat()
+    db().execute(
+        """
+        INSERT INTO metadata_attachments (
+            media_id, provider, external_id, metadata_json, refreshed_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(media_id) DO UPDATE SET
+            provider = excluded.provider,
+            external_id = excluded.external_id,
+            metadata_json = excluded.metadata_json,
+            refreshed_at = excluded.refreshed_at
+        """,
+        (
+            item_id, provider, external_id,
+            json.dumps(metadata, separators=(",", ":")), now, now,
+        ),
+    )
+    db().commit()
+    return provider, metadata
+
+
 def enrich_media_item(item_id: int) -> tuple[str, dict]:
     item = db().execute(
         "SELECT id, title, year, media_type FROM media WHERE id = ?", (item_id,)
@@ -1555,114 +1749,151 @@ def enrich_media_item(item_id: int) -> tuple[str, dict]:
     attachment = db().execute(
         "SELECT * FROM metadata_attachments WHERE media_id = ?", (item_id,)
     ).fetchone()
-    if item["media_type"] == "Music":
-        music_fetchers = {
-            "musicbrainz": fetch_musicbrainz_release,
-            "discogs": fetch_discogs_release,
-            "lastfm": fetch_lastfm_album,
-        }
-        if attachment:
-            fetcher = music_fetchers.get(attachment["provider"])
-            if not fetcher:
-                raise ValueError("This music metadata provider cannot be refreshed.")
-            metadata = fetcher(attachment["external_id"])
-            db().execute(
-                "UPDATE metadata_attachments SET metadata_json = ?, refreshed_at = ? "
-                "WHERE id = ?",
-                (
-                    json.dumps(metadata, separators=(",", ":")),
-                    datetime.now(timezone.utc).isoformat(),
-                    attachment["id"],
-                ),
+    existing_metadata = {}
+    if attachment:
+        try:
+            existing_metadata = json.loads(attachment["metadata_json"] or "{}")
+        except json.JSONDecodeError:
+            existing_metadata = {}
+    source = db().execute(
+        """
+        SELECT * FROM jellyfin_sources
+        WHERE media_id = ? AND action IN ('attached', 'created')
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        (item_id,),
+    ).fetchone()
+    app.logger.info(
+        "Metadata refresh item_id=%s title=%r media_type=%s has_jellyfin=%s",
+        item_id, item["title"], item["media_type"], bool(source),
+    )
+
+    jellyfin_metadata = {}
+    use_jellyfin_metadata = bool(source and jellyfin_settings()["use_metadata"])
+    if attachment and attachment["provider"] == "jellyfin" and not use_jellyfin_metadata:
+        existing_metadata = {}
+    if use_jellyfin_metadata:
+        app.logger.info("Jellyfin metadata attempted item_id=%s", item_id)
+        jellyfin_metadata = current_jellyfin_metadata(source)
+        if jellyfin_metadata:
+            app.logger.info(
+                "Jellyfin metadata found item_id=%s ids=%s",
+                item_id, jellyfin_metadata.get("provider_ids") or {},
             )
-            db().commit()
-            return attachment["provider"], metadata
-        source = db().execute(
-            """
-            SELECT metadata_json FROM jellyfin_sources
-            WHERE media_id = ? AND action IN ('attached', 'created')
-            ORDER BY created_at DESC LIMIT 1
-            """,
-            (item_id,),
-        ).fetchone()
-        source_data = json.loads(source["metadata_json"] or "{}") if source else {}
-        artist = source_data.get("artist") or ""
-        errors = []
-        for provider in music_provider_order():
+        else:
+            app.logger.info("Jellyfin metadata missing item_id=%s", item_id)
+
+    music_fetchers = {
+        "musicbrainz": fetch_musicbrainz_release,
+        "discogs": fetch_discogs_release,
+        "lastfm": fetch_lastfm_album,
+    }
+    fallback_metadata = existing_metadata
+    fallback_provider = attachment["provider"] if attachment else None
+    errors = []
+    fallback_fields = (
+        ("poster_url", "genres", "runtime_minutes", "track_count")
+        if item["media_type"] == "Music"
+        else (
+            "poster_url", "overview", "genres", "runtime_minutes",
+            "director", "cast", "studio", "release_date",
+        )
+    )
+    needs_external_fallback = not jellyfin_metadata or any(
+        not metadata_value_present(jellyfin_metadata.get(field))
+        for field in fallback_fields
+    )
+
+    if item["media_type"] == "Music":
+        artist = jellyfin_metadata.get("artist") or existing_metadata.get("artist") or ""
+        provider_ids = jellyfin_metadata.get("provider_ids") or {}
+        for provider in music_provider_order() if needs_external_fallback else ():
+            fetcher = music_fetchers.get(provider)
+            if not fetcher:
+                continue
             try:
-                external_id = find_music_release(
-                    provider, item["title"], artist, item["year"]
-                )
+                external_id = None
+                if provider == "musicbrainz":
+                    external_id = jellyfin_provider_id(
+                        provider_ids, "MusicBrainzAlbum", "MusicBrainzRelease"
+                    )
+                if not external_id and attachment and attachment["provider"] == provider:
+                    external_id = attachment["external_id"]
+                if not external_id:
+                    external_id = find_music_release(
+                        provider, item["title"], artist, item["year"]
+                    )
                 if not external_id:
                     continue
-                metadata = music_fetchers[provider](external_id)
-                now = datetime.now(timezone.utc).isoformat()
-                db().execute(
-                    """
-                    INSERT INTO metadata_attachments (
-                        media_id, provider, external_id, metadata_json,
-                        refreshed_at, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        item_id, provider, external_id,
-                        json.dumps(metadata, separators=(",", ":")), now, now,
-                    ),
+                app.logger.info(
+                    "External metadata fallback item_id=%s provider=%s id=%s",
+                    item_id, provider, external_id,
                 )
-                db().commit()
-                return provider, metadata
-            except (ValueError, sqlite3.IntegrityError) as exc:
-                db().rollback()
+                fallback_metadata = fetcher(external_id)
+                fallback_provider = provider
+                break
+            except ValueError as exc:
                 errors.append(f"{provider}: {exc}")
+    elif item["media_type"] in ("Movies", "Television"):
+        configured = provider_settings()
+        order = (
+            [provider for provider in ("tmdb", "omdb")
+             if configured.get(f"{provider}_api_key")]
+            if source else provider_order()
+        )
+        provider_ids = jellyfin_metadata.get("provider_ids") or {}
+        for provider in order if needs_external_fallback else ():
+            try:
+                external_id = (
+                    jellyfin_provider_id(provider_ids, "Tmdb")
+                    if provider == "tmdb"
+                    else jellyfin_provider_id(provider_ids, "Imdb")
+                )
+                if not external_id and attachment and attachment["provider"] == provider:
+                    external_id = attachment["external_id"]
+                if not external_id:
+                    external_id = find_provider_title(
+                        provider, item["title"], item["year"], item["media_type"]
+                    )
+                if not external_id:
+                    continue
+                app.logger.info(
+                    "External metadata fallback item_id=%s provider=%s id=%s",
+                    item_id, provider, external_id,
+                )
+                fallback_metadata = fetch_provider_title(
+                    provider, external_id, item["media_type"]
+                )
+                fallback_provider = provider
+                break
+            except ValueError as exc:
+                errors.append(f"{provider.upper()}: {exc}")
+    else:
+        raise LookupError("Metadata enrichment is not available for this media type yet.")
+
+    if jellyfin_metadata:
+        final_metadata = fill_metadata_gaps(jellyfin_metadata, fallback_metadata)
+        final_metadata["metadata_source"] = "Jellyfin"
+        provider = "jellyfin"
+        external_id = source["jellyfin_item_id"]
+    elif fallback_metadata:
+        final_metadata = fallback_metadata
+        provider = fallback_provider
+        external_id = (
+            attachment["external_id"]
+            if attachment and attachment["provider"] == provider
+            else str(final_metadata.get("external_id") or "")
+        )
+    else:
         if errors:
             raise ValueError("; ".join(errors))
-        raise LookupError(
-            "No exact album match found. Use Change Metadata Source to choose one."
-        )
-    if item["media_type"] != "Movies":
-        raise LookupError("Metadata enrichment is not available for this media type yet.")
-    order = provider_order()
-    if not order:
-        raise ValueError("Configure an OMDb or TMDB API key in Settings first.")
-    errors = []
-    for provider in order:
-        try:
-            external_id = None
-            if attachment and attachment["provider"] == provider:
-                external_id = attachment["external_id"]
-            if not external_id:
-                external_id = find_provider_movie(
-                    provider, item["title"], item["year"]
-                )
-            if not external_id:
-                continue
-            metadata = fetch_provider_movie(provider, external_id)
-            now = datetime.now(timezone.utc).isoformat()
-            db().execute(
-                """
-                INSERT INTO metadata_attachments (
-                    media_id, provider, external_id, metadata_json,
-                    refreshed_at, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(media_id) DO UPDATE SET
-                    provider = excluded.provider,
-                    external_id = excluded.external_id,
-                    metadata_json = excluded.metadata_json,
-                    refreshed_at = excluded.refreshed_at
-                """,
-                (
-                    item_id, provider, external_id,
-                    json.dumps(metadata, separators=(",", ":")), now, now,
-                ),
-            )
-            db().commit()
-            return provider, metadata
-        except (ValueError, sqlite3.IntegrityError) as exc:
-            db().rollback()
-            errors.append(f"{provider.upper()}: {exc}")
-    if errors:
-        raise ValueError("; ".join(errors))
-    raise LookupError("No exact provider match found for this title and year.")
+        raise LookupError("No exact provider match found for this title and year.")
+
+    app.logger.info(
+        "Metadata refresh complete item_id=%s final_source=%s",
+        item_id, provider,
+    )
+    return save_metadata_attachment(item_id, provider, external_id, final_metadata)
 
 
 def tmdb_request(path: str, query: dict | None = None) -> dict:
@@ -1700,7 +1931,11 @@ def normalize_tmdb_movie(raw: dict) -> dict:
     ]
     poster_path = raw.get("poster_path") or ""
     backdrop_path = raw.get("backdrop_path") or ""
-    release_date = raw.get("release_date") or ""
+    release_date = raw.get("release_date") or raw.get("first_air_date") or ""
+    runtime = raw.get("runtime")
+    if not runtime:
+        runtimes = raw.get("episode_run_time") or []
+        runtime = runtimes[0] if runtimes else None
     return {
         "title": raw.get("title") or raw.get("name") or "Untitled",
         "year": int(release_date[:4]) if release_date[:4].isdigit() else None,
@@ -1709,7 +1944,7 @@ def normalize_tmdb_movie(raw: dict) -> dict:
             genre.get("name") for genre in (raw.get("genres") or [])
             if genre.get("name")
         ],
-        "runtime_minutes": raw.get("runtime"),
+        "runtime_minutes": runtime,
         "rating": raw.get("vote_average"),
         "director": ", ".join(directors),
         "cast": [person.get("name") for person in cast[:12] if person.get("name")],
@@ -1881,6 +2116,7 @@ def media_quick_view(item_id: int):
             "omdb": "OMDb", "tmdb": "TMDB",
             "musicbrainz": "MusicBrainz",
             "discogs": "Discogs", "lastfm": "Last.fm",
+            "jellyfin": "Jellyfin",
         }
         metadata["metadata_source"] = provider_names.get(
             metadata_attachment["provider"], metadata_attachment["provider"]
@@ -1900,6 +2136,8 @@ def media_quick_view(item_id: int):
             "library_name": source["jellyfin_library_name"],
             "server_url": source["server_url"],
             "action": source["action"],
+            "source_updated_at": source["source_updated_at"],
+            "source_metadata_updated_at": source["source_metadata_updated_at"],
         }
     return jsonify({
         "collector": collector,
@@ -1928,7 +2166,7 @@ def refresh_media_metadata(item_id: int):
 def refresh_all_metadata():
     items = db().execute(
         "SELECT id, title, media_type FROM media "
-        "WHERE media_type IN ('Movies', 'Music') "
+        "WHERE media_type IN ('Movies', 'Television', 'Music') "
         "ORDER BY media_type, title"
     ).fetchall()
     result = {
@@ -1939,6 +2177,7 @@ def refresh_all_metadata():
         "failures": [],
         "categories": {
             "Movies": {"processed": 0, "enriched": 0, "skipped": 0, "failed": 0},
+            "Television": {"processed": 0, "enriched": 0, "skipped": 0, "failed": 0},
             "Music": {"processed": 0, "enriched": 0, "skipped": 0, "failed": 0},
         },
     }
@@ -2305,6 +2544,7 @@ def source_summary():
             ),
             "details": {
                 "server_url": jellyfin["server_url"],
+                "use_metadata": jellyfin["use_metadata"],
                 "libraries": libraries["enabled"] or 0,
                 "items": jellyfin_count,
                 "last_sync": last_sync,
@@ -2590,6 +2830,7 @@ def get_jellyfin_settings():
         "server_name": settings["server_name"],
         "api_key": "",
         "has_api_key": bool(settings["api_key"]),
+        "use_metadata": settings["use_metadata"],
     })
 
 
@@ -2934,6 +3175,9 @@ def save_jellyfin_settings():
             "jellyfin_server_url": normalize_server_url(str(payload.get("server_url", ""))),
             "jellyfin_api_key": str(payload.get("api_key", "")).strip() or current["api_key"],
             "jellyfin_server_name": str(payload.get("server_name", "")).strip(),
+            "jellyfin_use_metadata": (
+                "1" if payload.get("use_metadata", True) else "0"
+            ),
         }
         if not values["jellyfin_api_key"]:
             raise ValueError("API Key is required.")
@@ -3118,6 +3362,7 @@ def delete_source_instance(source_type: str, source_id: str):
         db().execute(
             "DELETE FROM app_settings WHERE key IN ("
             "'jellyfin_server_url', 'jellyfin_api_key', 'jellyfin_server_name', "
+            "'jellyfin_use_metadata', "
             "'jellyfin_auto_sync', 'jellyfin_auto_sync_frequency', "
             "'jellyfin_last_sync_summary', 'jellyfin_source_disabled')"
         )
@@ -3216,8 +3461,8 @@ def jellyfin_import_action():
             "format": "Digital",
             "status": "Unassigned",
             "condition": "Unknown",
-            "notes": "Available in Jellyfin.",
-            "tags": "Jellyfin",
+            "notes": "",
+            "tags": "",
         })
         columns = ", ".join(clean.keys())
         placeholders = ", ".join("?" for _ in clean)
@@ -3235,19 +3480,29 @@ def jellyfin_import_action():
             INSERT INTO jellyfin_sources (
                 jellyfin_item_id, jellyfin_library_id, jellyfin_library_name,
                 server_url, media_id, source_title, source_year, action,
-                metadata_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                metadata_json, source_updated_at,
+                source_metadata_updated_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_id, item.get("library_id"), item.get("library_name"),
                 server_url, media_id, title, item.get("year"), stored_action,
-                json.dumps(item, separators=(",", ":")), now,
+                json.dumps(item, separators=(",", ":")),
+                item.get("source_updated_at"),
+                item.get("source_metadata_updated_at"), now,
             ),
         )
         db().commit()
     except sqlite3.IntegrityError:
         db().rollback()
         return jsonify({"error": "This Jellyfin item has already been handled."}), 409
+    if media_id and stored_action in ("attached", "created"):
+        try:
+            enrich_media_item(media_id)
+        except (ValueError, LookupError, sqlite3.Error):
+            app.logger.exception(
+                "Jellyfin import metadata enrichment failed media_id=%s", media_id
+            )
     return jsonify({"action": stored_action, "media_id": media_id})
 
 
