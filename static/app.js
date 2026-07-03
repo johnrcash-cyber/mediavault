@@ -1,6 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => document.querySelectorAll(selector);
-const state = { query: "", type: "", status: "", origin: "", view: "dashboard", items: [], wishlistItems: [], wishlistDetailItem: null, returnToWishlistDetail: false, jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviderPriority: "musicbrainz,discogs,coverartarchive,lastfm", musicProviders: ["musicbrainz"], settingsTab: "metadata", catalogPreview: null, catalogCategory: "new_items" };
+const savedDisplayView = localStorage.getItem("mediavault_display_view");
+const state = { query: "", type: "", status: "", origin: "", view: "dashboard", displayView: ["poster", "list"].includes(savedDisplayView) ? savedDisplayView : "poster", items: [], wishlistItems: [], wishlistDetailItem: null, returnToWishlistDetail: false, jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviderPriority: "musicbrainz,discogs,coverartarchive,lastfm", musicProviders: ["musicbrainz"], settingsTab: "metadata", catalogPreview: null, catalogCategory: "new_items" };
 const typeIcons = { Movies: "▶", Television: "TV", Music: "♫", Games: "✦", Books: "B", Other: "MV" };
 
 async function api(url, options = {}) {
@@ -33,7 +34,7 @@ function card(item, options = {}) {
   ).join("");
   const summary = item.overview || item.notes || "";
   const enrichmentStatus = item.enrichment_status || item.metadata_status || "";
-  return `<article class="media-card type-${escapeHtml(item.media_type)}${isWishlist ? " wishlist-card" : ""}" ${isWishlist ? `data-wishlist-id="${item.id}"` : `data-id="${item.id}"`}>
+  return `<article class="media-card media-item-entry type-${escapeHtml(item.media_type)}${isWishlist ? " wishlist-card wishlist-item-entry" : ""}" ${isWishlist ? `data-wishlist-id="${item.id}"` : `data-id="${item.id}"`}>
     <div class="cover ${item.poster_url ? "has-poster" : ""}">
       ${item.poster_url ? `<img src="${escapeHtml(item.poster_url)}" alt="" loading="lazy">` : `<span class="cover-icon">${typeIcons[item.media_type] || "MV"}</span>`}
       ${isWishlist ? '<span class="wishlist-badge">♡ Wishlist</span>' : ""}
@@ -55,6 +56,68 @@ function emptyState(isFiltered = false) {
     ${isFiltered ? "" : '<br><button class="button primary empty-add">＋ Add your first item</button>'}</div>`;
 }
 
+function compactListItem(item, options = {}) {
+  const isWishlist = Boolean(options.wishlist);
+  const details = [
+    item.year || "Year unknown", item.media_type, item.artist || "",
+    item.runtime_minutes ? `${item.runtime_minutes} min` : "",
+  ].filter(Boolean).join(" · ");
+  const status = isWishlist ? "♡ Not owned" : (item.status || "Unassigned");
+  const provider = item.metadata_provider || "";
+  const enrichment = item.enrichment_status || item.metadata_status || "";
+  return `<article class="compact-media-row media-item-entry${isWishlist ? " wishlist-item-entry" : ""}" ${isWishlist ? `data-wishlist-id="${item.id}"` : `data-id="${item.id}"`}>
+    <div class="compact-media-poster type-${escapeHtml(item.media_type)}">
+      ${item.poster_url ? `<img src="${escapeHtml(item.poster_url)}" alt="" loading="lazy">` : `<span>${typeIcons[item.media_type] || "MV"}</span>`}
+    </div>
+    <div class="compact-media-title"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(details)}</small></div>
+    <div class="compact-media-badges">
+      ${item.format ? `<span class="compact-badge format">${escapeHtml(item.format)}</span>` : ""}
+      ${provider ? `<span class="compact-badge provider">${escapeHtml(provider)}</span>` : ""}
+    </div>
+    <div class="compact-media-status"><strong>${escapeHtml(status)}</strong>${isWishlist && enrichment ? `<small>${escapeHtml(enrichment)}</small>` : ""}</div>
+    <div class="compact-media-rating">${item.rating ? `★ ${Number(item.rating).toFixed(1)}` : ""}</div>
+  </article>`;
+}
+
+function syncDisplayViewControls() {
+  $$("[data-display-view]").forEach((button) => {
+    const active = button.dataset.displayView === state.displayView;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function renderCollectionItems() {
+  const container = $("#collectionGrid");
+  container.classList.toggle("compact-list", state.displayView === "list");
+  container.innerHTML = state.items.length
+    ? state.items.map((item) => state.displayView === "list"
+      ? compactListItem(item) : card(item)).join("")
+    : emptyState(Boolean(state.query || state.type || state.status));
+}
+
+function renderWishlistItems() {
+  const container = $("#wishlistGrid");
+  container.classList.toggle("compact-list", state.displayView === "list");
+  container.innerHTML = state.wishlistItems.length
+    ? state.wishlistItems.map((item) => {
+      const mapped = wishlistCardData(item);
+      return state.displayView === "list"
+        ? compactListItem(mapped, { wishlist: true })
+        : card(mapped, { wishlist: true });
+    }).join("")
+    : `<div class="empty-state"><strong>Your Wishlist is empty.</strong><span>Add a title you want to remember.</span><br><button class="button primary" data-add-wishlist>＋ Add Wishlist Item</button></div>`;
+}
+
+function setDisplayView(view) {
+  if (!["poster", "list"].includes(view)) return;
+  state.displayView = view;
+  localStorage.setItem("mediavault_display_view", view);
+  syncDisplayViewControls();
+  if (state.view === "collection") renderCollectionItems();
+  if (state.view === "wishlist") renderWishlistItems();
+}
+
 async function loadDashboard() {
   const data = await api("/api/dashboard");
   $("#totalCount").textContent = data.total;
@@ -71,7 +134,7 @@ async function loadCollection() {
   if (state.status) params.set("status", state.status);
   if (state.origin) params.set("source", state.origin);
   state.items = await api(`/api/media?${params}`);
-  $("#collectionGrid").innerHTML = state.items.length ? state.items.map(card).join("") : emptyState(Boolean(state.query || state.type || state.status));
+  renderCollectionItems();
   $("#collectionTitle").textContent = state.origin === "manual" ? "Manual Items" : state.type || state.status || "My Library";
   $("#resultSummary").textContent = `${state.items.length} ${state.items.length === 1 ? "item" : "items"} found`;
 }
@@ -115,6 +178,7 @@ async function loadWishlist() {
       card(wishlistCardData(item), { wishlist: true })
     ).join("")
     : `<div class="empty-state"><strong>Your Wishlist is empty.</strong><span>Add a title you want to remember.</span><br><button class="button primary" data-add-wishlist>＋ Add Wishlist Item</button></div>`;
+  renderWishlistItems();
   scheduleWishlistRefresh();
 }
 
@@ -752,6 +816,11 @@ function toast(message, duration = 2200) {
 }
 
 document.addEventListener("click", async (event) => {
+  const displayViewButton = event.target.closest("[data-display-view]");
+  if (displayViewButton) {
+    setDisplayView(displayViewButton.dataset.displayView);
+    return;
+  }
   if (event.target.closest("[data-add-wishlist]")) {
     openWishlistModal();
     return;
@@ -772,7 +841,7 @@ document.addEventListener("click", async (event) => {
     }
     return;
   }
-  const wishlistCard = event.target.closest(".wishlist-card[data-wishlist-id]");
+  const wishlistCard = event.target.closest(".wishlist-item-entry[data-wishlist-id]");
   if (wishlistCard) {
     const item = state.wishlistItems.find(
       (value) => String(value.id) === wishlistCard.dataset.wishlistId
@@ -851,7 +920,7 @@ document.addEventListener("click", async (event) => {
     }
     return;
   }
-  const mediaCard = event.target.closest(".media-card[data-id]");
+  const mediaCard = event.target.closest(".media-item-entry[data-id]");
   if (mediaCard) {
     try { await openQuickView(mediaCard.dataset.id); } catch (error) { toast(error.message); }
   }
@@ -953,7 +1022,7 @@ $("#deleteButton").addEventListener("click", async () => {
   try {
     await api(`/api/media/${id}`, { method: "DELETE" });
     state.items = state.items.filter((item) => String(item.id) !== String(id));
-    document.querySelector(`.media-card[data-id="${CSS.escape(String(id))}"]`)?.remove();
+    document.querySelector(`.media-item-entry[data-id="${CSS.escape(String(id))}"]`)?.remove();
     closeModal();
     if (state.quickItem?.collector?.id === Number(id)) {
       state.quickItem = null;
@@ -1030,6 +1099,7 @@ $("#deleteWishlistDetail").addEventListener("click", async () => {
   try { await deleteWishlistItem(state.wishlistDetailItem); }
   catch (error) { toast(error.message, 5000); }
 });
+syncDisplayViewControls();
 $("#wishlistForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   $("#wishlistError").textContent = "";

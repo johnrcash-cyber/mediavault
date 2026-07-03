@@ -72,6 +72,10 @@
           <div class="filter-bar">
             <select id="typeFilter"><option value="">All media types</option>{% for value in media_types %}<option>{{ value }}</option>{% endfor %}</select>
             <select id="statusFilter"><option value="">All statuses</option>{% for value in statuses %}<option>{{ value }}</option>{% endfor %}</select>
+            <div class="display-view-toggle" aria-label="Display view">
+              <button type="button" data-display-view="poster" title="Poster Grid"><span>▦</span> Poster</button>
+              <button type="button" data-display-view="list" title="Compact List"><span>☷</span> List</button>
+            </div>
             <button class="text-button clear-filter" id="clearFilters">Clear filters</button>
           </div>
           <div id="collectionGrid" class="media-grid collection-grid"></div>
@@ -81,6 +85,12 @@
           <div class="page-heading collection-heading">
             <div><p class="eyebrow">LIST</p><h1>Wishlist</h1><p id="wishlistCount">0 items</p></div>
             <button class="button primary" id="addWishlistItem">＋ Add Wishlist Item</button>
+          </div>
+          <div class="wishlist-toolbar">
+            <div class="display-view-toggle" aria-label="Display view">
+              <button type="button" data-display-view="poster" title="Poster Grid"><span>▦</span> Poster</button>
+              <button type="button" data-display-view="list" title="Compact List"><span>☷</span> List</button>
+            </div>
           </div>
           <div id="wishlistGrid" class="media-grid collection-grid wishlist-grid"></div>
         </section>
