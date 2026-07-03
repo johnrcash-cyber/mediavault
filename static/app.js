@@ -311,6 +311,13 @@ async function loadSources() {
   try {
     const data = await api("/api/sources");
     $("#localSourceCount").textContent = data.local.items;
+    const metadataRefresh = data.local.metadata_refresh;
+    $("#localMetadataLastRefresh").textContent = metadataRefresh?.completed_at
+      ? new Date(metadataRefresh.completed_at).toLocaleString()
+      : "Never";
+    $("#localMetadataEnriched").textContent = metadataRefresh
+      ? `${metadataRefresh.enriched || 0} / ${metadataRefresh.processed || 0}`
+      : "—";
     renderCatalogSourceHealth(data);
     renderSourceAccordions(data.instances || []);
   } catch (error) { toast(error.message); }
@@ -1450,12 +1457,27 @@ $("#exportCatalogButton").addEventListener("click", () => { window.location.href
 $("#exportLocalCatalog").addEventListener("click", () => { window.location.href = "/api/catalog/export"; });
 $("#syncAllSourcesButton").addEventListener("click", () => $("#refreshLibraryAction").click());
 $("#sourceFullRefreshButton").addEventListener("click", async () => {
-  if (!confirm("Run a full source and metadata refresh? MediaVault will not delete records or overwrite collector fields.")) return;
+  const button = $("#sourceFullRefreshButton");
+  button.disabled = true;
+  button.textContent = "Refreshing…";
+  toast("Metadata refresh started.", 3000);
   try {
-    const result = await api("/api/jellyfin/full-refresh", { method: "POST", body: "{}" });
-    toast(`Full refresh complete · ${result.sync.added || 0} added · ${result.sync.updated || 0} updated · ${result.sync.failed || 0} failed`, 6000);
+    const result = await api("/api/metadata/refresh-all", {
+      method: "POST",
+      body: "{}",
+    });
+    toast(
+      `Metadata refresh complete · ${result.processed || 0} processed · ${result.enriched || 0} enriched · ${result.skipped || 0} skipped · ${result.failed || 0} failed`,
+      7000,
+    );
     await Promise.all([loadSources(), loadDashboard()]);
-  } catch (error) { toast(error.message, 6000); }
+  } catch (error) {
+    console.error("Master catalog metadata refresh failed:", error);
+    toast("Metadata refresh failed. Check server logs.", 6000);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Refresh Metadata";
+  }
 });
 $("#viewLocalItems").addEventListener("click", () => setView("collection", { type: "", status: "", origin: "" }));
 $("#closeCatalogImport").addEventListener("click", closeCatalogImport);

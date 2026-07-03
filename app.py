@@ -2169,6 +2169,11 @@ def refresh_all_metadata():
         "WHERE media_type IN ('Movies', 'Television', 'Music') "
         "ORDER BY media_type, title"
     ).fetchall()
+    started_at = datetime.now(timezone.utc).isoformat()
+    app.logger.info(
+        "Metadata refresh started source=%r item_count=%s",
+        "MediaVault Database / master catalog", len(items),
+    )
     result = {
         "processed": 0,
         "enriched": 0,
@@ -2197,6 +2202,10 @@ def refresh_all_metadata():
                 "media_type": item["media_type"],
                 "status": "skipped", "error": str(exc),
             })
+            app.logger.info(
+                "Metadata refresh skipped item_id=%s title=%r error=%s",
+                item["id"], item["title"], exc,
+            )
         except (ValueError, sqlite3.Error) as exc:
             result["failed"] += 1
             category["failed"] += 1
@@ -2205,6 +2214,27 @@ def refresh_all_metadata():
                 "media_type": item["media_type"],
                 "status": "failed", "error": str(exc),
             })
+            app.logger.error(
+                "Metadata refresh failed item_id=%s title=%r error=%s",
+                item["id"], item["title"], exc,
+            )
+    result["started_at"] = started_at
+    result["completed_at"] = datetime.now(timezone.utc).isoformat()
+    db().execute(
+        """
+        INSERT INTO app_settings(key, value)
+        VALUES('metadata_last_refresh_summary', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (json.dumps(result, separators=(",", ":")),),
+    )
+    db().commit()
+    app.logger.info(
+        "Metadata refresh complete source=%r item_count=%s enriched=%s "
+        "skipped=%s failed=%s",
+        "MediaVault Database / master catalog", result["processed"],
+        result["enriched"], result["skipped"], result["failed"],
+    )
     return jsonify(result)
 
 
@@ -2495,6 +2525,16 @@ def dashboard():
 def source_summary():
     connection = db()
     total = connection.execute("SELECT COUNT(*) FROM media").fetchone()[0]
+    metadata_refresh_row = connection.execute(
+        "SELECT value FROM app_settings "
+        "WHERE key = 'metadata_last_refresh_summary'"
+    ).fetchone()
+    metadata_refresh = None
+    if metadata_refresh_row:
+        try:
+            metadata_refresh = json.loads(metadata_refresh_row["value"])
+        except json.JSONDecodeError:
+            app.logger.warning("Stored metadata refresh summary is invalid JSON")
     jellyfin_count = connection.execute(
         "SELECT COUNT(DISTINCT media_id) FROM jellyfin_sources "
         "WHERE media_id IS NOT NULL AND action IN ('attached', 'created')"
@@ -2569,7 +2609,11 @@ def source_summary():
             },
         })
     return jsonify({
-        "local": {"items": total, "status": "Active"},
+        "local": {
+            "items": total,
+            "status": "Active",
+            "metadata_refresh": metadata_refresh,
+        },
         "manual": {"items": manual_count, "status": "Active"},
         "jellyfin": {
             "items": jellyfin_count,
