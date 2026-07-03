@@ -1,6 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => document.querySelectorAll(selector);
-const state = { query: "", type: "", status: "", origin: "", view: "dashboard", items: [], wishlistItems: [], wishlistDetailItem: null, returnToWishlistDetail: false, jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviders: ["musicbrainz"], settingsTab: "metadata", catalogPreview: null, catalogCategory: "new_items" };
+const state = { query: "", type: "", status: "", origin: "", view: "dashboard", items: [], wishlistItems: [], wishlistDetailItem: null, returnToWishlistDetail: false, jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviderPriority: "musicbrainz,discogs,coverartarchive,lastfm", musicProviders: ["musicbrainz"], settingsTab: "metadata", catalogPreview: null, catalogCategory: "new_items" };
 const typeIcons = { Movies: "▶", Television: "TV", Music: "♫", Games: "✦", Books: "B", Other: "MV" };
 
 async function api(url, options = {}) {
@@ -301,6 +301,7 @@ async function loadProviderSettings() {
   try {
     const data = await api("/api/settings/providers");
     state.providerPriority = data.metadata_provider_priority || "omdb,tmdb";
+    state.musicProviderPriority = data.music_provider_priority || "musicbrainz,discogs,coverartarchive,lastfm";
     state.musicProviders = ["musicbrainz"];
     if (data.has_discogs_token) state.musicProviders.push("discogs");
     if (data.has_lastfm_api_key) state.musicProviders.push("lastfm");
@@ -317,7 +318,6 @@ async function loadProviderSettings() {
     $("#omdbKey").placeholder = data.has_omdb_api_key ? "OMDb key saved — leave blank to keep it" : "Enter your OMDb API key";
     $("#omdbKeyHint").textContent = data.has_omdb_api_key ? "An OMDb key is stored locally on the server." : "Primary movie metadata provider.";
     $("#providerPriority").value = state.providerPriority;
-    $("#musicProviderPriority").value = data.music_provider_priority || "musicbrainz,discogs,coverartarchive,lastfm";
   } catch (error) { $("#providerError").textContent = error.message; }
 }
 
@@ -1108,7 +1108,7 @@ $("#providerForm").addEventListener("submit", async (event) => {
         omdb_api_key: $("#omdbKey").value.trim(),
         tmdb_api_key: $("#tmdbKey").value.trim(),
         metadata_provider_priority: $("#providerPriority").value,
-        music_provider_priority: $("#musicProviderPriority").value,
+        music_provider_priority: state.musicProviderPriority,
         discogs_token: $("#discogsToken").value.trim(),
         lastfm_api_key: $("#lastfmKey").value.trim(),
         rawg_api_key: $("#rawgKey").value.trim(),
