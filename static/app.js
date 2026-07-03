@@ -284,11 +284,74 @@ function scheduleWishlistRefresh() {
   }
 }
 
-function setView(view, filters = {}) {
+const mediaTypeRoutes = {
+  Movies: "movies",
+  Television: "television",
+  Music: "music",
+  Games: "games",
+  Books: "books",
+  Other: "other",
+};
+const routeMediaTypes = Object.fromEntries(
+  Object.entries(mediaTypeRoutes).map(([type, route]) => [route, type])
+);
+
+function navigationSnapshot() {
+  return {
+    mediavault: true,
+    view: state.view,
+    type: state.type,
+    status: state.status,
+    origin: state.origin,
+    query: state.query,
+    settingsTab: state.settingsTab,
+  };
+}
+
+function navigationHash() {
+  if (state.view === "collection") {
+    return `#/${mediaTypeRoutes[state.type] || "library"}`;
+  }
+  if (state.view === "wishlist") return "#/wishlist";
+  if (state.view === "settings") return `#/settings/${state.settingsTab}`;
+  return "#/dashboard";
+}
+
+function updateNavigationHistory(mode = "push") {
+  if (mode === "none") return;
+  const target = `${window.location.pathname}${window.location.search}${navigationHash()}`;
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (mode === "replace" || target === current) {
+    window.history.replaceState(navigationSnapshot(), "", target);
+  } else {
+    window.history.pushState(navigationSnapshot(), "", target);
+  }
+}
+
+function navigationFromLocation(historyState = null) {
+  if (historyState?.mediavault) return historyState;
+  const parts = window.location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  if (parts[0] === "wishlist") return { view: "wishlist" };
+  if (parts[0] === "settings") {
+    return {
+      view: "settings",
+      settingsTab: ["metadata", "sources"].includes(parts[1]) ? parts[1] : "metadata",
+    };
+  }
+  if (routeMediaTypes[parts[0]]) {
+    return { view: "collection", type: routeMediaTypes[parts[0]] };
+  }
+  if (parts[0] === "library") return { view: "collection", type: "" };
+  return { view: "dashboard" };
+}
+
+function setView(view, filters = {}, options = {}) {
   state.view = view;
   if ("type" in filters) state.type = filters.type;
   if ("status" in filters) state.status = filters.status;
   if ("origin" in filters) state.origin = filters.origin;
+  if ("query" in filters) state.query = filters.query;
+  if ("settingsTab" in filters) state.settingsTab = filters.settingsTab;
   $("#dashboardView").hidden = view !== "dashboard";
   $("#collectionView").hidden = view !== "collection";
   $("#wishlistView").hidden = view !== "wishlist";
@@ -297,12 +360,15 @@ function setView(view, filters = {}) {
   $(`[data-view="${view}"]`)?.classList.add("active");
   $("#typeFilter").value = state.type;
   $("#statusFilter").value = state.status;
+  $("#searchInput").value = state.query;
   $(".sidebar").classList.remove("open");
+  updateNavigationHistory(options.historyMode || "push");
+  if (view === "dashboard") loadDashboard().catch((error) => toast(error.message));
   if (view === "collection") loadCollection();
   if (view === "wishlist") loadWishlist();
   else clearTimeout(wishlistRefreshTimer);
   if (view === "settings") {
-    setSettingsTab(state.settingsTab);
+    setSettingsTab(state.settingsTab, { historyMode: "none" });
     Promise.all([loadProviderSettings(), loadSourceStatus(), loadSources()]);
   }
 }
@@ -476,7 +542,7 @@ function renderSourceStatus(statuses) {
     }).join("");
 }
 
-function setSettingsTab(tab) {
+function setSettingsTab(tab, options = {}) {
   state.settingsTab = tab;
   $$(".settings-tab").forEach((button) =>
     button.classList.toggle("active", button.dataset.settingsTab === tab)
@@ -486,6 +552,9 @@ function setSettingsTab(tab) {
       ? tab !== "sources" || !state.jellyfinPreview
       : section.dataset.settingsSection !== tab;
   });
+  if (state.view === "settings") {
+    updateNavigationHistory(options.historyMode || "push");
+  }
 }
 
 async function loadProviderSettings() {
@@ -1270,9 +1339,26 @@ $("#wishlistForm").addEventListener("submit", async (event) => {
   } catch (error) { $("#wishlistError").textContent = error.message; }
   finally { submit.disabled = false; }
 });
-$("#typeFilter").addEventListener("change", (e) => { state.type = e.target.value; loadCollection(); });
-$("#statusFilter").addEventListener("change", (e) => { state.status = e.target.value; loadCollection(); });
-$("#clearFilters").addEventListener("click", () => { state.type = ""; state.status = ""; state.query = ""; $("#searchInput").value = ""; $("#typeFilter").value = ""; $("#statusFilter").value = ""; loadCollection(); });
+$("#typeFilter").addEventListener("change", (e) => {
+  state.type = e.target.value;
+  updateNavigationHistory("replace");
+  loadCollection();
+});
+$("#statusFilter").addEventListener("change", (e) => {
+  state.status = e.target.value;
+  updateNavigationHistory("replace");
+  loadCollection();
+});
+$("#clearFilters").addEventListener("click", () => {
+  state.type = "";
+  state.status = "";
+  state.query = "";
+  $("#searchInput").value = "";
+  $("#typeFilter").value = "";
+  $("#statusFilter").value = "";
+  updateNavigationHistory("replace");
+  loadCollection();
+});
 $("#addButton").addEventListener("click", () => openModal());
 $("#closeModal").addEventListener("click", closeModal);
 $("#cancelButton").addEventListener("click", closeModal);
@@ -1511,4 +1597,23 @@ $("#refreshSourceStatus").addEventListener("click", async () => {
 });
 $("#today").textContent = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(new Date()).toUpperCase();
 
-loadDashboard().catch((error) => toast(error.message));
+function restoreNavigation(historyState = null, historyMode = "none") {
+  const navigation = navigationFromLocation(historyState);
+  setView(
+    navigation.view || "dashboard",
+    {
+      type: navigation.type || "",
+      status: navigation.status || "",
+      origin: navigation.origin || "",
+      query: navigation.query || "",
+      settingsTab: navigation.settingsTab || "metadata",
+    },
+    { historyMode },
+  );
+}
+
+window.addEventListener("popstate", (event) => {
+  restoreNavigation(event.state, "none");
+});
+
+restoreNavigation(window.history.state, "replace");
