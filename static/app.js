@@ -942,6 +942,16 @@ function toast(message, duration = 2200) {
   setTimeout(() => $("#toast").classList.remove("show"), duration);
 }
 
+function downloadCatalogExport() {
+  const link = document.createElement("a");
+  link.href = "/api/catalog/export";
+  link.download = "";
+  link.hidden = true;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
 document.addEventListener("click", async (event) => {
   const sortButton = event.target.closest("[data-sort-key]");
   if (sortButton) {
@@ -1453,8 +1463,8 @@ $("#catalogImportFile").addEventListener("change", (event) => {
   const file = event.target.files[0];
   if (file) previewCatalogFile(file).catch((error) => toast(error.message, 5000));
 });
-$("#exportCatalogButton").addEventListener("click", () => { window.location.href = "/api/catalog/export"; });
-$("#exportLocalCatalog").addEventListener("click", () => { window.location.href = "/api/catalog/export"; });
+$("#exportCatalogButton").addEventListener("click", downloadCatalogExport);
+$("#exportLocalCatalog").addEventListener("click", downloadCatalogExport);
 $("#syncAllSourcesButton").addEventListener("click", () => $("#refreshLibraryAction").click());
 $("#sourceFullRefreshButton").addEventListener("click", async () => {
   const button = $("#sourceFullRefreshButton");

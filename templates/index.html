@@ -4,6 +4,21 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0b0c0f">
+  <link rel="canonical" href="{{ public_origin }}/">
+  <script>
+    (() => {
+      const publicUrl = new URL({{ public_origin|tojson }});
+      const currentUrl = new URL(window.location.href);
+      if (
+        currentUrl.hostname === publicUrl.hostname &&
+        currentUrl.origin !== publicUrl.origin
+      ) {
+        window.location.replace(
+          `${publicUrl.origin}${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`
+        );
+      }
+    })();
+  </script>
   <title>MediaVault — Know What You Own</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

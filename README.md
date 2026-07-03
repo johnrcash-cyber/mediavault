@@ -54,6 +54,21 @@ python app.py
 
 Open it locally at `http://127.0.0.1:5050`.
 
+## Reverse proxy deployment
+
+Keep Flask or Gunicorn bound to an internal interface and expose MediaVault
+through the HTTPS reverse proxy only. Forward the original `Host`,
+`X-Forwarded-Host`, `X-Forwarded-Proto`, and `X-Forwarded-Port` headers.
+
+The canonical public origin defaults to:
+
+```text
+https://mediavault.gridandink.com
+```
+
+Set `MEDIAVAULT_PUBLIC_ORIGIN` if the public hostname changes. Internal ports
+must not be included in this value.
+
 ## Phase 1 features
 
 - Dashboard counts and recently added items

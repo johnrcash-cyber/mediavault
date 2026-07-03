@@ -16,12 +16,20 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from flask import Flask, Response, g, jsonify, render_template, request
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE = Path(os.environ.get("MEDIAVAULT_DATABASE", BASE_DIR / "data" / "mediavault.db"))
+PUBLIC_ORIGIN = os.environ.get(
+    "MEDIAVAULT_PUBLIC_ORIGIN", "https://mediavault.gridandink.com"
+).rstrip("/")
 
 app = Flask(__name__)
+app.config["PREFERRED_URL_SCHEME"] = "https"
+app.wsgi_app = ProxyFix(
+    app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1
+)
 
 MEDIA_TYPES = ("Movies", "Television", "Music", "Games", "Books", "Other")
 FORMATS = (
@@ -2022,6 +2030,7 @@ def compare_jellyfin_movies(items: list[dict], library: dict, server_url: str) -
 def index():
     return render_template(
         "index.html",
+        public_origin=PUBLIC_ORIGIN,
         media_types=MEDIA_TYPES,
         formats=FORMATS,
         statuses=STATUSES,
