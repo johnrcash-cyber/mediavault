@@ -1144,7 +1144,7 @@ $("#testTmdb").addEventListener("click", async () => {
     $("#tmdbBadge").textContent = "Connection failed";
     $("#tmdbBadge").classList.remove("connected");
     $("#providerError").textContent = error.message;
-  } finally { $("#testTmdb").disabled = false; $("#testTmdb").textContent = "Test TMDB"; }
+  } finally { $("#testTmdb").disabled = false; $("#testTmdb").textContent = "Test TMDb"; }
 });
 $("#refreshAllMetadata").addEventListener("click", async () => {
   $("#bulkStatus").hidden = false;

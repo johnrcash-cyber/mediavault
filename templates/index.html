@@ -104,9 +104,33 @@
               <span class="connection-badge" id="tmdbBadge">Not tested</span>
             </div>
             <form id="providerForm" class="settings-form">
-              <label><span>OMDb API Key</span><input id="omdbKey" type="password" placeholder="Enter your OMDb API key"><small id="omdbKeyHint">Primary movie metadata provider.</small><a class="provider-help" href="https://www.omdbapi.com/apikey.aspx" target="_blank" rel="noopener noreferrer">Get a free OMDb API key ↗</a></label>
-              <label><span>TMDB API Key or Read Access Token</span><input id="tmdbKey" type="password" placeholder="Enter your TMDB credential"><small id="tmdbKeyHint">Optional movie and television provider.</small><a class="provider-help" href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener noreferrer">TMDB API account settings ↗</a><a class="provider-help subtle" href="https://developer.themoviedb.org/docs/authentication-application" target="_blank" rel="noopener noreferrer">Authentication documentation ↗</a></label>
+              <div class="provider-divider full movie-provider-heading"><span>MOVIE METADATA PROVIDERS</span></div>
               <label class="full"><span>Movie / TV Provider Priority</span><select id="providerPriority"><option value="omdb,tmdb">1. OMDb  →  2. TMDB</option><option value="tmdb,omdb">1. TMDB  →  2. OMDb</option></select></label>
+              <div class="movie-provider-list full">
+                <section class="movie-provider-block">
+                  <div class="movie-provider-block-head">
+                    <span class="movie-provider-mark omdb">OMDb</span>
+                    <div><h3>OMDb</h3><p>Movie and TV metadata provider.</p></div>
+                    <div class="movie-provider-actions">
+                      <button type="button" class="provider-inline-action" id="testOmdb">Test OMDb</button>
+                      <a class="provider-help" href="https://www.omdbapi.com/apikey.aspx" target="_blank" rel="noopener noreferrer">Get a free OMDb API key ↗</a>
+                    </div>
+                  </div>
+                  <label><span>OMDb API Key</span><input id="omdbKey" type="password" placeholder="Enter your OMDb API key"><small id="omdbKeyHint">Primary movie metadata provider.</small></label>
+                </section>
+                <section class="movie-provider-block">
+                  <div class="movie-provider-block-head">
+                    <span class="movie-provider-mark tmdb">TM</span>
+                    <div><h3>TMDb</h3><p>Movie and TV metadata provider.</p></div>
+                    <div class="movie-provider-actions">
+                      <button type="button" class="provider-inline-action" id="testTmdb">Test TMDb</button>
+                      <a class="provider-help" href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener noreferrer">TMDb API account settings ↗</a>
+                      <a class="provider-help subtle" href="https://developer.themoviedb.org/docs/authentication-application" target="_blank" rel="noopener noreferrer">Authentication documentation ↗</a>
+                    </div>
+                  </div>
+                  <label><span>TMDB API Key or Read Access Token</span><input id="tmdbKey" type="password" placeholder="Enter your TMDB credential"><small id="tmdbKeyHint">Optional movie and television provider.</small></label>
+                </section>
+              </div>
               <div class="provider-divider full"><span>MUSIC METADATA PROVIDERS</span></div>
               <div class="music-pipeline-info full">
                 <strong>Music Metadata Sources</strong>
@@ -127,8 +151,6 @@
               <label class="full"><span>RAWG API Key</span><input id="rawgKey" type="password" placeholder="Optional"><small>Reserved for Games enrichment.</small></label>
               <p class="form-error full" id="providerError"></p>
               <div class="settings-actions full">
-                <button type="button" class="button secondary" id="testOmdb">Test OMDb</button>
-                <button type="button" class="button secondary" id="testTmdb">Test TMDB</button>
                 <button type="submit" class="button primary">Save Providers</button>
               </div>
             </form>
