@@ -2223,11 +2223,17 @@ def dashboard():
         "movies": connection.execute(
             "SELECT COUNT(*) FROM media WHERE media_type = 'Movies'"
         ).fetchone()[0],
+        "television": connection.execute(
+            "SELECT COUNT(*) FROM media WHERE media_type = 'Television'"
+        ).fetchone()[0],
         "music": connection.execute(
             "SELECT COUNT(*) FROM media WHERE media_type = 'Music'"
         ).fetchone()[0],
         "games": connection.execute(
             "SELECT COUNT(*) FROM media WHERE media_type = 'Games'"
+        ).fetchone()[0],
+        "wishlist": connection.execute(
+            "SELECT COUNT(*) FROM wishlist_items WHERE status = 'Open'"
         ).fetchone()[0],
     }
     recent = connection.execute(

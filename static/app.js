@@ -213,8 +213,10 @@ async function loadDashboard() {
   const data = await api("/api/dashboard");
   $("#totalCount").textContent = data.total;
   $("#movieCount").textContent = data.movies;
+  $("#televisionCount").textContent = data.television;
   $("#musicCount").textContent = data.music;
   $("#gameCount").textContent = data.games;
+  $("#dashboardWishlistCount").textContent = data.wishlist;
   $("#recentGrid").innerHTML = data.recent.length ? data.recent.map(card).join("") : emptyState();
 }
 
@@ -1184,6 +1186,7 @@ document.addEventListener("keydown", (event) => {
 $$("[data-view]").forEach((el) => el.addEventListener("click", () => setView(el.dataset.view, { type: "", status: "", origin: "" })));
 $$(".type-link").forEach((el) => el.addEventListener("click", () => setView("collection", { type: el.dataset.type, status: "", origin: "" })));
 $$(".stat-card[data-stat-filter]").forEach((el) => el.addEventListener("click", () => setView("collection", { type: el.dataset.statFilter, status: "", origin: "" })));
+$$(".stat-card[data-stat-view]").forEach((el) => el.addEventListener("click", () => setView(el.dataset.statView, { type: "", status: "", origin: "" })));
 $("#viewAll").addEventListener("click", () => setView("collection", { type: "", status: "", origin: "" }));
 $("#addWishlistItem").addEventListener("click", () => openWishlistModal());
 $("#closeWishlistModal").addEventListener("click", closeWishlistModal);
