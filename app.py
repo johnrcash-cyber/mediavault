@@ -1845,7 +1845,14 @@ def get_media(item_id: int):
     row = db().execute("SELECT * FROM media WHERE id = ?", (item_id,)).fetchone()
     if row is None:
         return jsonify({"error": "Item not found."}), 404
-    return jsonify(row_to_dict(row))
+    item = row_to_dict(row)
+    attachment = db().execute(
+        "SELECT provider, external_id FROM metadata_attachments WHERE media_id = ?",
+        (item_id,),
+    ).fetchone()
+    item["metadata_source"] = attachment["provider"] if attachment else None
+    item["provider_id"] = attachment["external_id"] if attachment else None
+    return jsonify(item)
 
 
 @app.get("/api/media/<int:item_id>/quick-view")
@@ -2036,11 +2043,49 @@ def update_media(item_id: int):
 
 @app.delete("/api/media/<int:item_id>")
 def delete_media(item_id: int):
-    cursor = db().execute("DELETE FROM media WHERE id = ?", (item_id,))
-    db().commit()
-    if cursor.rowcount == 0:
+    connection = db()
+    item = connection.execute(
+        """
+        SELECT m.id, m.title, ma.provider, ma.external_id
+        FROM media m
+        LEFT JOIN metadata_attachments ma ON ma.media_id = m.id
+        WHERE m.id = ?
+        """,
+        (item_id,),
+    ).fetchone()
+    if item is None:
+        app.logger.warning("Catalog deletion requested for missing id=%s", item_id)
         return jsonify({"error": "Item not found."}), 404
-    return "", 204
+    app.logger.info(
+        "Deleting catalog item: id=%s title=%r provider=%s provider_id=%s",
+        item["id"], item["title"], item["provider"], item["external_id"],
+    )
+    try:
+        # Source history remains available, but no longer points at a deleted item.
+        connection.execute(
+            "UPDATE jellyfin_sources SET media_id = NULL WHERE media_id = ?",
+            (item_id,),
+        )
+        connection.execute(
+            "UPDATE catalog_import_links SET media_id = NULL WHERE media_id = ?",
+            (item_id,),
+        )
+        cursor = connection.execute("DELETE FROM media WHERE id = ?", (item_id,))
+        if cursor.rowcount != 1:
+            raise sqlite3.IntegrityError("Catalog record was not deleted.")
+        connection.commit()
+        app.logger.info(
+            "Catalog deletion success: id=%s title=%r", item_id, item["title"]
+        )
+        return "", 204
+    except sqlite3.Error as exc:
+        connection.rollback()
+        app.logger.exception(
+            "Catalog deletion failed: id=%s title=%r provider=%s "
+            "provider_id=%s error=%s",
+            item_id, item["title"], item["provider"], item["external_id"], exc,
+        )
+        return jsonify({"error": "Delete failed. See server logs."}), 500
 
 
 @app.get("/api/wishlist")

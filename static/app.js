@@ -627,6 +627,8 @@ function openModal(item = null) {
   form.reset();
   $("#formError").textContent = "";
   $("#itemId").value = item?.id || "";
+  $("#editMetadataProvider").value = item?.metadata_source || "";
+  $("#editProviderId").value = item?.provider_id || "";
   $("#modalTitle").textContent = item ? "Edit catalog item" : "Add to your vault";
   $("#saveButton").textContent = item ? "Save changes" : "Add to library";
   $("#deleteButton").hidden = !item;
@@ -946,11 +948,32 @@ $("#mediaForm").addEventListener("submit", async (event) => {
 $("#deleteButton").addEventListener("click", async () => {
   const id = $("#itemId").value;
   if (!id || !confirm("Remove this item from your catalog?")) return;
+  const button = $("#deleteButton");
+  button.disabled = true;
   try {
     await api(`/api/media/${id}`, { method: "DELETE" });
-    closeModal(); toast("Item removed.");
+    state.items = state.items.filter((item) => String(item.id) !== String(id));
+    document.querySelector(`.media-card[data-id="${CSS.escape(String(id))}"]`)?.remove();
+    closeModal();
+    if (state.quickItem?.collector?.id === Number(id)) {
+      state.quickItem = null;
+      closeQuickView();
+    }
+    toast("Item removed.");
     await Promise.all([loadDashboard(), state.view === "collection" ? loadCollection() : Promise.resolve()]);
-  } catch (error) { $("#formError").textContent = error.message; }
+  } catch (error) {
+    console.error("Catalog delete failed", {
+      id,
+      title: $("#mediaForm").elements.namedItem("title")?.value,
+      provider: $("#editMetadataProvider").value,
+      providerId: $("#editProviderId").value,
+      error,
+    });
+    $("#formError").textContent = error.message === "Delete failed. See server logs."
+      ? error.message : "Unable to delete item.";
+  } finally {
+    button.disabled = false;
+  }
 });
 
 let searchTimer;
