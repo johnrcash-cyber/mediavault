@@ -194,6 +194,43 @@ def init_db() -> None:
         )
         """
     )
+    wishlist_columns = {
+        row[1] for row in connection.execute(
+            "PRAGMA table_info(wishlist_items)"
+        ).fetchall()
+    }
+    wishlist_migrations = {
+        "user_id": "INTEGER",
+        "year": "INTEGER",
+        "media_type": "TEXT",
+        "notes": "TEXT",
+        "status": "TEXT DEFAULT 'Open'",
+        "metadata_status": "TEXT DEFAULT 'Pending'",
+        "created_at": "TEXT",
+        "updated_at": "TEXT",
+    }
+    for column, definition in wishlist_migrations.items():
+        if column not in wishlist_columns:
+            connection.execute(
+                f"ALTER TABLE wishlist_items ADD COLUMN {column} {definition}"
+            )
+    migration_now = datetime.now(timezone.utc).isoformat()
+    connection.execute(
+        "UPDATE wishlist_items SET status = 'Open' "
+        "WHERE status IS NULL OR status = ''"
+    )
+    connection.execute(
+        "UPDATE wishlist_items SET metadata_status = 'Pending' "
+        "WHERE metadata_status IS NULL OR metadata_status = ''"
+    )
+    connection.execute(
+        "UPDATE wishlist_items SET created_at = ? "
+        "WHERE created_at IS NULL OR created_at = ''",
+        (migration_now,),
+    )
+    connection.execute(
+        "UPDATE wishlist_items SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at)"
+    )
     preview_columns = {
         row[1] for row in connection.execute(
             "PRAGMA table_info(import_previews)"
@@ -1881,24 +1918,34 @@ def create_wishlist_item():
         item = clean_wishlist_payload(request.get_json(silent=True) or {})
     except (ValueError, TypeError) as exc:
         return jsonify({"error": str(exc)}), 400
-    now = datetime.now(timezone.utc).isoformat()
-    cursor = db().execute(
-        """
-        INSERT INTO wishlist_items (
-            user_id, title, year, media_type, notes, status,
-            metadata_status, created_at, updated_at
-        ) VALUES (NULL, ?, ?, ?, ?, 'Open', 'Pending', ?, ?)
-        """,
-        (
-            item["title"], item["year"], item["media_type"],
-            item["notes"], now, now,
-        ),
-    )
-    db().commit()
-    row = db().execute(
-        "SELECT * FROM wishlist_items WHERE id = ?", (cursor.lastrowid,)
-    ).fetchone()
-    return jsonify(wishlist_to_dict(row)), 201
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = db().execute(
+            """
+            INSERT INTO wishlist_items (
+                user_id, title, year, media_type, notes, status,
+                metadata_status, created_at, updated_at
+            ) VALUES (NULL, ?, ?, ?, ?, 'Open', 'Pending', ?, ?)
+            """,
+            (
+                item["title"], item["year"], item["media_type"],
+                item["notes"], now, now,
+            ),
+        )
+        db().commit()
+        row = db().execute(
+            "SELECT * FROM wishlist_items WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        return jsonify(wishlist_to_dict(row)), 201
+    except sqlite3.Error:
+        db().rollback()
+        app.logger.exception(
+            "Wishlist save failed for title=%r payload=%r",
+            item.get("title"), request.get_json(silent=True),
+        )
+        return jsonify({
+            "error": "Wishlist item could not be saved. Check the server log."
+        }), 500
 
 
 @app.put("/api/wishlist/<int:item_id>")
