@@ -583,33 +583,45 @@ function closeQuickView() {
 }
 
 function openModal(item = null) {
-  $("#mediaForm").reset();
+  const form = $("#mediaForm");
+  const field = (name) => form.elements.namedItem(name);
+  form.reset();
   $("#formError").textContent = "";
   $("#itemId").value = item?.id || "";
   $("#modalTitle").textContent = item ? "Edit catalog item" : "Add to your vault";
   $("#saveButton").textContent = item ? "Save changes" : "Add to library";
   $("#deleteButton").hidden = !item;
-  $('[name="title"]').readOnly = Boolean(item);
-  $('[name="year"]').readOnly = Boolean(item);
-  $('[name="title"]').title = item ? "Title is read-only in Edit. Refresh attached metadata to update display information." : "";
-  $('[name="year"]').title = item ? "Year is read-only in Edit. Refresh attached metadata to update display information." : "";
+  field("title").readOnly = Boolean(item);
+  field("year").readOnly = Boolean(item);
+  field("title").title = item ? "Title is read-only in Edit. Refresh attached metadata to update display information." : "";
+  field("year").title = item ? "Year is read-only in Edit. Refresh attached metadata to update display information." : "";
   if (item) {
-    Object.entries(item).forEach(([key, value]) => {
-      const field = $(`[name="${key}"]`);
-      if (field) field.value = Array.isArray(value) ? value.join(", ") : (value ?? "");
+    if (!item.id) {
+      toast("This catalog item could not be selected for editing.");
+      return false;
+    }
+    [
+      "title", "year", "media_type", "format", "status", "condition",
+      "upc", "tags", "notes", "purchase_price", "purchase_date",
+      "purchase_location", "physical_location",
+    ].forEach((name) => {
+      const input = field(name);
+      const value = item[name];
+      if (input) input.value = Array.isArray(value) ? value.join(", ") : (value ?? "");
     });
   } else {
-    $('[name="status"]').value = "Unassigned";
-    $('[name="condition"]').value = "Good";
+    field("status").value = "Unassigned";
+    field("condition").value = "Good";
   }
   $("#modal").hidden = false;
   document.body.style.overflow = "hidden";
-  setTimeout(() => $('[name="title"]').focus(), 30);
+  setTimeout(() => field("title").focus(), 30);
+  return true;
 }
 
 function closeModal() {
   $("#modal").hidden = true;
-  document.body.style.overflow = "";
+  document.body.style.overflow = $("#quickView").hidden ? "" : "hidden";
 }
 
 function openWishlistModal(item = null) {
@@ -823,6 +835,9 @@ $("#mediaForm").addEventListener("submit", async (event) => {
     closeModal();
     toast(id ? "Item updated." : "Added to your vault.");
     await Promise.all([loadDashboard(), state.view === "collection" ? loadCollection() : Promise.resolve()]);
+    if (id && state.quickItem?.collector?.id === Number(id)) {
+      await openQuickView(id);
+    }
   } catch (error) { $("#formError").textContent = error.message; }
 });
 
@@ -887,10 +902,18 @@ $("#modal").addEventListener("click", (e) => { if (e.target === $("#modal")) clo
 $("#closeQuickView").addEventListener("click", closeQuickView);
 $("#closeQuickButton").addEventListener("click", closeQuickView);
 $("#quickView").addEventListener("click", (e) => { if (e.target === $("#quickView")) closeQuickView(); });
-$("#editQuickView").addEventListener("click", () => {
-  if (!state.quickItem) return;
-  closeQuickView();
-  openModal(state.quickItem.collector);
+$("#editQuickView").addEventListener("click", async () => {
+  const selectedId = state.quickItem?.collector?.id;
+  if (!selectedId) {
+    toast("Select a catalog item before editing collector information.");
+    return;
+  }
+  try {
+    const collector = await api(`/api/media/${selectedId}`);
+    openModal(collector);
+  } catch (error) {
+    toast(`Could not open collector information: ${error.message}`, 5000);
+  }
 });
 $("#refreshMetadata").addEventListener("click", async () => {
   if (!state.quickItem) return;
