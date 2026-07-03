@@ -28,7 +28,7 @@ FORMATS = (
     "DVD", "Blu-ray", "4K", "CD", "Vinyl", "Cassette",
     "FLAC", "MP3", "Game Disc", "Cartridge", "Digital", "Other",
 )
-STATUSES = ("Owned", "In Collection", "Wishlist", "Upgrade Candidate")
+STATUSES = ("Unassigned", "Owned", "Borrowed", "Archived")
 CONDITIONS = ("New", "Like New", "Good", "Fair", "Poor", "Unknown")
 
 
@@ -58,7 +58,7 @@ def init_db() -> None:
             year INTEGER,
             media_type TEXT NOT NULL,
             format TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'In Collection',
+            status TEXT NOT NULL DEFAULT 'Unassigned',
             upc TEXT,
             condition TEXT,
             purchase_price REAL,
@@ -185,6 +185,12 @@ def init_db() -> None:
     }
     if "import_id" not in preview_columns:
         connection.execute("ALTER TABLE import_previews ADD COLUMN import_id INTEGER")
+    allowed_statuses = ", ".join("?" for _ in STATUSES)
+    connection.execute(
+        f"UPDATE media SET status = 'Unassigned' "
+        f"WHERE status NOT IN ({allowed_statuses})",
+        STATUSES,
+    )
     connection.commit()
     connection.close()
 
@@ -227,7 +233,7 @@ def clean_payload(payload: dict) -> dict:
 
     media_type = str(payload.get("media_type", "Other"))
     item_format = str(payload.get("format", "Other"))
-    status = str(payload.get("status", "In Collection"))
+    status = str(payload.get("status", "Unassigned"))
     condition = str(payload.get("condition", "Unknown"))
     if media_type not in MEDIA_TYPES:
         raise ValueError("Invalid media type.")
@@ -571,7 +577,7 @@ def sync_jellyfin_libraries() -> dict:
                         "year": source["year"],
                         "media_type": category,
                         "format": "Digital",
-                        "status": "In Collection",
+                        "status": "Unassigned",
                         "condition": "Unknown",
                         "notes": "",
                         "tags": "",
@@ -1676,8 +1682,6 @@ def media_quick_view(item_id: int):
         "sources": {
             "jellyfin": bool(source),
             "physical_media": collector["format"] != "Digital",
-            "wishlist": collector["status"] == "Wishlist",
-            "upgrade_wanted": collector["status"] == "Upgrade Candidate",
         },
     })
 
@@ -1832,9 +1836,6 @@ def dashboard():
         ).fetchone()[0],
         "games": connection.execute(
             "SELECT COUNT(*) FROM media WHERE media_type = 'Games'"
-        ).fetchone()[0],
-        "wishlist": connection.execute(
-            "SELECT COUNT(*) FROM media WHERE status = 'Wishlist'"
         ).fetchone()[0],
     }
     recent = connection.execute(
@@ -2815,7 +2816,7 @@ def jellyfin_import_action():
             "year": item.get("year"),
             "media_type": "Movies",
             "format": "Digital",
-            "status": "In Collection",
+            "status": "Unassigned",
             "condition": "Unknown",
             "notes": "Available in Jellyfin.",
             "tags": "Jellyfin",

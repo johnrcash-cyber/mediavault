@@ -19,7 +19,7 @@ function escapeHtml(value = "") {
 }
 
 function card(item) {
-  const statusClass = item.status === "Wishlist" ? "wishlist" : item.status === "Upgrade Candidate" ? "upgrade" : "";
+  const statusClass = item.status === "Archived" ? "archived" : "";
   const providerClass = (item.metadata_provider || "").toLowerCase();
   const detailBits = [
     item.year || "Year unknown",
@@ -56,7 +56,6 @@ async function loadDashboard() {
   $("#movieCount").textContent = data.movies;
   $("#musicCount").textContent = data.music;
   $("#gameCount").textContent = data.games;
-  $("#wishlistCount").textContent = data.wishlist;
   $("#recentGrid").innerHTML = data.recent.length ? data.recent.map(card).join("") : emptyState();
 }
 
@@ -448,8 +447,6 @@ async function openQuickView(itemId) {
   if (data.sources.jellyfin) sourceLabels.push('<span class="source-chip jellyfin">Jellyfin</span>');
   if (collector.media_type === "Music") sourceLabels.push(`<span class="source-chip physical">${escapeHtml(collector.format)}</span>`);
   if (data.sources.physical_media && collector.media_type !== "Music") sourceLabels.push('<span class="source-chip physical">Physical Media</span>');
-  if (data.sources.wishlist) sourceLabels.push('<span class="source-chip wishlist">Wishlist</span>');
-  if (data.sources.upgrade_wanted) sourceLabels.push('<span class="source-chip upgrade">Upgrade Wanted</span>');
   $("#quickSources").innerHTML = sourceLabels.join("");
   $("#refreshMetadata").disabled = !(
     data.metadata_source || ["Movies", "Music"].includes(collector.media_type)
@@ -582,7 +579,7 @@ function openModal(item = null) {
       if (field) field.value = Array.isArray(value) ? value.join(", ") : (value ?? "");
     });
   } else {
-    $('[name="status"]').value = "In Collection";
+    $('[name="status"]').value = "Unassigned";
     $('[name="condition"]').value = "Good";
   }
   $("#modal").hidden = false;
@@ -788,9 +785,7 @@ document.addEventListener("keydown", (event) => {
 
 $$("[data-view]").forEach((el) => el.addEventListener("click", () => setView(el.dataset.view, { type: "", status: "", origin: "" })));
 $$(".type-link").forEach((el) => el.addEventListener("click", () => setView("collection", { type: el.dataset.type, status: "", origin: "" })));
-$$(".status-link").forEach((el) => el.addEventListener("click", () => setView("collection", { type: "", status: el.dataset.status, origin: "" })));
 $$(".stat-card[data-stat-filter]").forEach((el) => el.addEventListener("click", () => setView("collection", { type: el.dataset.statFilter, status: "", origin: "" })));
-$("#wishlistCard").addEventListener("click", () => setView("collection", { type: "", status: "Wishlist", origin: "" }));
 $("#viewAll").addEventListener("click", () => setView("collection", { type: "", status: "", origin: "" }));
 $("#typeFilter").addEventListener("change", (e) => { state.type = e.target.value; loadCollection(); });
 $("#statusFilter").addEventListener("change", (e) => { state.status = e.target.value; loadCollection(); });
