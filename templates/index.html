@@ -188,18 +188,25 @@
               <button class="button secondary" id="importCatalogButton">Import Catalog</button>
               <button class="button secondary" id="exportCatalogButton">Export Catalog</button>
               <button class="button secondary" id="syncAllSourcesButton">Sync All Sources</button>
-              <button class="button danger" id="sourceFullRefreshButton">Full Refresh</button>
               <input type="file" id="catalogImportFile" accept=".json,application/json" hidden>
             </div>
-            <div class="source-card-grid">
-              <article class="source-model-card">
-                <div class="source-card-head"><span class="source-card-icon local">MV</span><div><h3>MediaVault Local Database</h3><small>INTERNAL</small></div><span class="source-state online">Active</span></div>
+            <section class="source-hierarchy-section">
+              <h3 class="source-section-heading">Master Catalog</h3>
+              <div class="source-card-grid source-section-grid">
+              <article class="source-model-card master-catalog-card">
+                <div class="source-card-head"><span class="source-card-icon local">MV</span><div><h3>MediaVault Database</h3><small>INTERNAL</small></div><span class="source-state online">Active</span></div>
                 <p>Items stored directly inside MediaVault, including collector-owned fields.</p>
                 <div class="source-card-stats"><span><small>ITEMS</small><strong id="localSourceCount">0</strong></span><span><small>ROLE</small><strong>Master catalog</strong></span></div>
-                <div class="source-card-actions"><button class="text-button" id="viewLocalItems">View</button><button class="text-button" id="exportLocalCatalog">Export</button></div>
+                <div class="source-card-actions"><button class="text-button" id="viewLocalItems">View</button><button class="text-button" id="exportLocalCatalog">Export</button><button class="text-button" id="sourceFullRefreshButton">Refresh Metadata</button></div>
               </article>
+              </div>
+            </section>
+            <section class="source-hierarchy-section connected-sources-section">
+              <h3 class="source-section-heading">Connected Sources</h3>
+              <div class="source-card-grid source-section-grid">
               <div id="externalSourceCards" class="external-source-cards"></div>
-            </div>
+              </div>
+            </section>
           </section>
         </section>
       </div>
