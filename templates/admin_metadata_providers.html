@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Metadata Providers — MediaVault Administration</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='base.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='auth.css') }}">
+</head>
+<body class="account-page admin-provider-page">
+  <main class="account-wrap provider-admin-wrap">
+    <nav class="account-nav">
+      <a class="brand" href="{{ url_for('index') }}"><span class="brand-mark">MV</span><span><strong>MediaVault</strong><small>KNOW WHAT YOU OWN</small></span></a>
+      <a href="{{ url_for('administration') }}">Administration</a>
+      <a href="{{ url_for('profile') }}">Profile</a>
+      <form action="{{ url_for('logout') }}" method="post"><button type="submit">Logout</button></form>
+    </nav>
+    <div class="page-heading settings-heading">
+      <div><p class="eyebrow">SYSTEM</p><h1>Metadata Providers</h1><p>Configure global enrichment services for MediaVault.</p></div>
+    </div>
+    <section class="settings-panel provider-panel">
+      <div class="source-health-panel embedded">
+        <div class="source-health-head"><div><p class="eyebrow">PROVIDER HEALTH</p><h2>Metadata Connections</h2><p>Availability for enrichment services. Catalog sources are managed separately.</p></div><button class="button secondary" id="refreshSourceStatus">Check Now</button></div>
+        <div class="source-health-grid" id="sourceHealthGrid"></div>
+      </div>
+      <div class="settings-panel-head">
+        <span class="integration-mark tmdb-mark">TM</span>
+        <div><h2>Metadata Providers</h2><p>Configure enrichment services. Credentials stay on this server.</p></div>
+        <span class="connection-badge" id="tmdbBadge">Not tested</span>
+      </div>
+      <form id="providerForm" class="settings-form">
+        <div class="provider-divider full movie-provider-heading"><span>MOVIE METADATA PROVIDERS</span></div>
+        <label class="full"><span>Movie / TV Provider Priority</span><select id="providerPriority"><option value="omdb,tmdb">1. OMDb → 2. TMDB</option><option value="tmdb,omdb">1. TMDB → 2. OMDb</option></select></label>
+        <div class="movie-provider-list full">
+          <section class="movie-provider-block">
+            <div class="movie-provider-block-head">
+              <span class="movie-provider-mark omdb">OMDb</span>
+              <div><h3>OMDb</h3><p>Movie and TV metadata provider.</p></div>
+              <div class="movie-provider-actions">
+                <button type="button" class="provider-inline-action" id="testOmdb">Test OMDb</button>
+                <a class="provider-help" href="https://www.omdbapi.com/apikey.aspx" target="_blank" rel="noopener noreferrer">Get a free OMDb API key ↗</a>
+              </div>
+            </div>
+            <label><span>OMDb API Key</span><input id="omdbKey" type="password" placeholder="Enter your OMDb API key"><small id="omdbKeyHint">Primary movie metadata provider.</small></label>
+          </section>
+          <section class="movie-provider-block">
+            <div class="movie-provider-block-head">
+              <span class="movie-provider-mark tmdb">TM</span>
+              <div><h3>TMDb</h3><p>Movie and TV metadata provider.</p></div>
+              <div class="movie-provider-actions">
+                <button type="button" class="provider-inline-action" id="testTmdb">Test TMDb</button>
+                <a class="provider-help" href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener noreferrer">TMDb API account settings ↗</a>
+                <a class="provider-help subtle" href="https://developer.themoviedb.org/docs/authentication-application" target="_blank" rel="noopener noreferrer">Authentication documentation ↗</a>
+              </div>
+            </div>
+            <label><span>TMDB API Key or Read Access Token</span><input id="tmdbKey" type="password" placeholder="Enter your TMDB credential"><small id="tmdbKeyHint">Optional movie and television provider.</small></label>
+          </section>
+        </div>
+        <div class="provider-divider full"><span>MUSIC METADATA PROVIDERS</span></div>
+        <div class="music-pipeline-info full">
+          <strong>Music Metadata Sources</strong>
+          <p>MediaVault currently uses the following enrichment order:</p>
+          <b>MusicBrainz → Discogs → Cover Art Archive → Last.fm</b>
+          <ul>
+            <li>MusicBrainz provides primary release metadata.</li>
+            <li>Cover Art Archive provides album artwork.</li>
+            <li>Discogs supplements edition information.</li>
+            <li>Last.fm supplements artist and album details.</li>
+          </ul>
+        </div>
+        <label><span>MusicBrainz</span><input value="Enabled — no key required" readonly><small>Primary release, edition, and track metadata.</small><a class="provider-help" href="https://musicbrainz.org/doc/MusicBrainz_API" target="_blank" rel="noopener noreferrer">MusicBrainz API help ↗</a></label>
+        <label><span>Cover Art Archive</span><input value="Enabled — no key required" readonly><small>Album artwork for MusicBrainz releases.</small><a class="provider-help" href="https://musicbrainz.org/doc/Cover_Art_Archive/API" target="_blank" rel="noopener noreferrer">Cover Art Archive help ↗</a></label>
+        <label><span>Discogs Token</span><input id="discogsToken" type="password" placeholder="Optional"><small>Additional release and edition provider.</small><a class="provider-help" href="https://www.discogs.com/settings/developers" target="_blank" rel="noopener noreferrer">Discogs developer settings ↗</a></label>
+        <label><span>Last.fm API Key</span><input id="lastfmKey" type="password" placeholder="Optional"><small>Additional album and artist provider.</small><a class="provider-help" href="https://www.last.fm/api/account/create" target="_blank" rel="noopener noreferrer">Create a Last.fm API account ↗</a></label>
+        <div class="provider-divider full"><span>GAMES</span></div>
+        <label class="full"><span>RAWG API Key</span><input id="rawgKey" type="password" placeholder="Optional"><small>Reserved for Games enrichment.</small></label>
+        <p class="form-error full" id="providerError"></p>
+        <div class="settings-actions full"><button type="submit" class="button primary">Save Providers</button></div>
+      </form>
+      <div class="bulk-refresh">
+        <div><p class="eyebrow">LIBRARY ENRICHMENT</p><h3>Refresh Movies & Music</h3><p>Enrich movies and albums using each category’s provider priority. Collector data is never changed.</p></div>
+        <button type="button" class="button secondary" id="refreshAllMetadata">Refresh All Metadata</button>
+      </div>
+      <div class="bulk-status" id="bulkStatus" hidden>
+        <div class="bulk-status-head"><strong id="bulkStatusTitle">Refresh started</strong><span id="bulkStatusNote"></span></div>
+        <div class="bulk-counts">
+          <span><small>PROCESSED</small><b id="bulkProcessed">0</b></span>
+          <span><small>ENRICHED</small><b id="bulkEnriched">0</b></span>
+          <span><small>SKIPPED</small><b id="bulkSkipped">0</b></span>
+          <span><small>FAILED</small><b id="bulkFailed">0</b></span>
+        </div>
+        <div class="bulk-category-status" id="bulkCategoryStatus"></div>
+        <button class="text-button" id="viewFailedItems" hidden>View failed items</button>
+        <div class="failed-items" id="failedItems" hidden></div>
+      </div>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="{{ url_for('static', filename='admin_providers.js') }}"></script>
+</body>
+</html>

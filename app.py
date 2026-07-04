@@ -2651,6 +2651,14 @@ def administration():
     )
 
 
+@app.get("/administration/metadata-providers")
+def administration_metadata_providers():
+    user = require_admin()
+    if not user:
+        return render_template("forbidden.html"), 403
+    return render_template("admin_metadata_providers.html", user=user)
+
+
 @app.before_request
 def require_authentication():
     public_endpoints = {
@@ -3683,6 +3691,8 @@ def get_jellyfin_settings():
 
 @app.get("/api/settings/providers")
 def get_provider_settings():
+    if not require_admin():
+        return jsonify({"error": "Administrator access required."}), 403
     settings = provider_settings()
     return jsonify({
         "omdb_api_key": "",
@@ -3702,6 +3712,8 @@ def get_provider_settings():
 
 @app.get("/api/source-status")
 def get_source_status():
+    if not require_admin():
+        return jsonify({"error": "Administrator access required."}), 403
     user_id = active_user_id()
     rows = {
         row["source_name"]: dict(row)
@@ -3732,6 +3744,8 @@ def get_source_status():
 
 @app.post("/api/source-status/refresh")
 def refresh_source_status():
+    if not require_admin():
+        return jsonify({"error": "Administrator access required."}), 403
     return jsonify(run_source_health_checks(active_user_id()))
 
 

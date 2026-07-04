@@ -124,10 +124,10 @@
             <div><p class="eyebrow">SYSTEM</p><h1>Settings</h1><p>Connect external sources to your MediaVault catalog.</p></div>
           </div>
           <div class="settings-tabs">
-            <button class="settings-tab active" data-settings-tab="metadata">Metadata Providers</button>
-            <button class="settings-tab" data-settings-tab="sources">Sources</button>
+            <button class="settings-tab active" data-settings-tab="sources">Sources</button>
           </div>
-          <div class="settings-panel provider-panel" data-settings-section="metadata">
+          {% if false %}
+          <div class="settings-panel provider-panel" data-settings-section="metadata" hidden aria-hidden="true">
             <div class="source-health-panel embedded">
               <div class="source-health-head"><div><p class="eyebrow">PROVIDER HEALTH</p><h2>Metadata Connections</h2><p>Availability for enrichment services. Catalog sources are managed separately.</p></div><button class="button secondary" id="refreshSourceStatus">Check Now</button></div>
               <div class="source-health-grid" id="sourceHealthGrid"></div>
@@ -205,7 +205,8 @@
               <div class="failed-items" id="failedItems" hidden></div>
             </div>
           </div>
-          <section class="settings-panel provider-panel sources-workspace" data-settings-section="sources" hidden>
+          {% endif %}
+          <section class="settings-panel provider-panel sources-workspace" data-settings-section="sources">
             <div class="source-health-panel embedded catalog-source-health">
               <div class="source-health-head"><div><p class="eyebrow">SOURCE HEALTH</p><h2>Catalog Sources</h2><p>Availability of the systems that feed the MediaVault catalog.</p></div></div>
               <div class="source-health-grid" id="catalogSourceHealthGrid"></div>

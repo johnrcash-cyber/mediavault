@@ -4,7 +4,7 @@ const savedDisplayView = localStorage.getItem("mediavault_display_view");
 const sortableKeys = ["title", "year", "media_type", "runtime", "format", "status", "provider", "rating", "enrichment"];
 const savedSortKey = localStorage.getItem("mediavault_sort_key");
 const savedSortDirection = localStorage.getItem("mediavault_sort_direction");
-const state = { query: "", type: "", status: "", origin: "", view: "dashboard", displayView: ["poster", "list"].includes(savedDisplayView) ? savedDisplayView : "poster", sortKey: sortableKeys.includes(savedSortKey) ? savedSortKey : "", sortDirection: ["asc", "desc"].includes(savedSortDirection) ? savedSortDirection : "asc", items: [], wishlistItems: [], wishlistDetailItem: null, returnToWishlistDetail: false, jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviderPriority: "musicbrainz,discogs,coverartarchive,lastfm", musicProviders: ["musicbrainz"], settingsTab: "metadata", catalogPreview: null, catalogCategory: "new_items" };
+const state = { query: "", type: "", status: "", origin: "", view: "dashboard", displayView: ["poster", "list"].includes(savedDisplayView) ? savedDisplayView : "poster", sortKey: sortableKeys.includes(savedSortKey) ? savedSortKey : "", sortDirection: ["asc", "desc"].includes(savedSortDirection) ? savedSortDirection : "asc", items: [], wishlistItems: [], wishlistDetailItem: null, returnToWishlistDetail: false, jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviderPriority: "musicbrainz,discogs,coverartarchive,lastfm", musicProviders: ["musicbrainz"], settingsTab: "sources", catalogPreview: null, catalogCategory: "new_items" };
 const typeIcons = { Movies: "▶", Television: "TV", Music: "♫", Games: "✦", Books: "B", Other: "MV" };
 
 async function api(url, options = {}) {
@@ -323,7 +323,7 @@ function navigationHash() {
     return `#/${mediaTypeRoutes[state.type] || "library"}`;
   }
   if (state.view === "wishlist") return "#/wishlist";
-  if (state.view === "settings") return `#/settings/${state.settingsTab}`;
+  if (state.view === "settings") return "#/settings/sources";
   return "#/dashboard";
 }
 
@@ -343,10 +343,7 @@ function navigationFromLocation(historyState = null) {
   const parts = window.location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (parts[0] === "wishlist") return { view: "wishlist" };
   if (parts[0] === "settings") {
-    return {
-      view: "settings",
-      settingsTab: ["metadata", "sources"].includes(parts[1]) ? parts[1] : "metadata",
-    };
+    return { view: "settings", settingsTab: "sources" };
   }
   if (routeMediaTypes[parts[0]]) {
     return { view: "collection", type: routeMediaTypes[parts[0]] };
@@ -378,8 +375,8 @@ function setView(view, filters = {}, options = {}) {
   if (view === "wishlist") loadWishlist();
   else clearTimeout(wishlistRefreshTimer);
   if (view === "settings") {
-    setSettingsTab(state.settingsTab, { historyMode: "none" });
-    Promise.all([loadProviderSettings(), loadSourceStatus(), loadSources()]);
+    setSettingsTab("sources", { historyMode: "none" });
+    loadSources();
   }
 }
 
@@ -553,14 +550,14 @@ function renderSourceStatus(statuses) {
 }
 
 function setSettingsTab(tab, options = {}) {
-  state.settingsTab = tab;
+  state.settingsTab = "sources";
   $$(".settings-tab").forEach((button) =>
-    button.classList.toggle("active", button.dataset.settingsTab === tab)
+    button.classList.toggle("active", button.dataset.settingsTab === "sources")
   );
   $$("[data-settings-section]").forEach((section) => {
     section.hidden = section.id === "importPreview"
-      ? tab !== "sources" || !state.jellyfinPreview
-      : section.dataset.settingsSection !== tab;
+      ? !state.jellyfinPreview
+      : section.dataset.settingsSection !== "sources";
   });
   if (state.view === "settings") {
     updateNavigationHistory(options.historyMode || "push");
@@ -1467,6 +1464,7 @@ $("#metadataSearchForm").addEventListener("submit", async (event) => {
 $("#metadataProvider").addEventListener("change", () => {
   $("#metadataSearchButton").textContent = `Search ${$("#metadataProvider").selectedOptions[0].text}`;
 });
+if ($("#providerForm")) {
 $("#providerForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   $("#providerError").textContent = "";
@@ -1552,6 +1550,7 @@ $("#viewFailedItems").addEventListener("click", () => {
   $("#failedItems").hidden = !$("#failedItems").hidden;
   $("#viewFailedItems").textContent = $("#failedItems").hidden ? "View failed items" : "Hide failed items";
 });
+}
 $("#menuButton").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
 $("#refreshLibraryAction").addEventListener("click", async () => {
   const button = $("#refreshLibraryAction");
@@ -1633,7 +1632,7 @@ $$(".catalog-preview-tabs .preview-tab").forEach((tab) =>
 $$(".settings-tab").forEach((button) =>
   button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab))
 );
-$("#refreshSourceStatus").addEventListener("click", async () => {
+$("#refreshSourceStatus")?.addEventListener("click", async () => {
   $("#refreshSourceStatus").disabled = true;
   $("#refreshSourceStatus").textContent = "Checking…";
   try {
@@ -1653,7 +1652,7 @@ function restoreNavigation(historyState = null, historyMode = "none") {
       status: navigation.status || "",
       origin: navigation.origin || "",
       query: navigation.query || "",
-      settingsTab: navigation.settingsTab || "metadata",
+      settingsTab: "sources",
     },
     { historyMode },
   );
