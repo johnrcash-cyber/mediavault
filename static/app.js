@@ -976,7 +976,9 @@ function openWishlistDetail(item) {
     fact("Runtime", item.runtime_minutes ? `${item.runtime_minutes} min` : ""),
     fact("Genres", item.genres),
     fact("Enrichment", item.enrichment_status || item.metadata_status),
-    fact("Wishlist status", `${item.status || "Open"} / Not owned`),
+    fact("Wishlist status", item.wishlist_status
+      ? item.wishlist_status[0].toUpperCase() + item.wishlist_status.slice(1)
+      : "Wanted"),
     fact("Last enriched", item.enriched_at ? new Date(item.enriched_at).toLocaleString() : ""),
   ].join("");
   $("#wishlistDetailChips").innerHTML =

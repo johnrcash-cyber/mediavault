@@ -209,6 +209,9 @@ def init_db() -> None:
             media_type TEXT,
             notes TEXT,
             status TEXT NOT NULL DEFAULT 'Open',
+            wishlist_status TEXT NOT NULL DEFAULT 'wanted',
+            acquired_at TEXT,
+            dismissed_at TEXT,
             metadata_status TEXT NOT NULL DEFAULT 'Pending',
             poster_url TEXT,
             overview TEXT,
@@ -236,6 +239,9 @@ def init_db() -> None:
         "media_type": "TEXT",
         "notes": "TEXT",
         "status": "TEXT DEFAULT 'Open'",
+        "wishlist_status": "TEXT DEFAULT 'wanted'",
+        "acquired_at": "TEXT",
+        "dismissed_at": "TEXT",
         "metadata_status": "TEXT DEFAULT 'Pending'",
         "poster_url": "TEXT",
         "overview": "TEXT",
@@ -251,13 +257,23 @@ def init_db() -> None:
     }
     for column, definition in wishlist_migrations.items():
         if column not in wishlist_columns:
-            connection.execute(
-                f"ALTER TABLE wishlist_items ADD COLUMN {column} {definition}"
-            )
+            try:
+                connection.execute(
+                    f"ALTER TABLE wishlist_items ADD COLUMN {column} {definition}"
+                )
+            except sqlite3.OperationalError as exc:
+                # Multiple production workers may run this idempotent migration
+                # at the same time. Another worker adding the column is safe.
+                if "duplicate column name" not in str(exc).casefold():
+                    raise
     migration_now = datetime.now(timezone.utc).isoformat()
     connection.execute(
         "UPDATE wishlist_items SET status = 'Open' "
         "WHERE status IS NULL OR status = ''"
+    )
+    connection.execute(
+        "UPDATE wishlist_items SET wishlist_status = 'wanted' "
+        "WHERE wishlist_status IS NULL OR wishlist_status = ''"
     )
     connection.execute(
         "UPDATE wishlist_items SET metadata_status = 'Pending' "
@@ -325,6 +341,7 @@ def row_to_card_dict(row: sqlite3.Row) -> dict:
 
 def wishlist_to_dict(row: sqlite3.Row) -> dict:
     item = dict(row)
+    item["wishlist_status"] = item.get("wishlist_status") or "wanted"
     try:
         item["genres"] = json.loads(item.get("genres") or "[]")
     except json.JSONDecodeError:
@@ -2505,6 +2522,47 @@ def refresh_wishlist_metadata(item_id: int):
     db().commit()
     enrich_wishlist_item_async(item_id)
     return jsonify({"status": "Pending", "id": item_id}), 202
+
+
+@app.patch("/api/wishlist/<int:item_id>/status")
+def update_wishlist_status(item_id: int):
+    payload = request.get_json(silent=True) or {}
+    wishlist_status = str(
+        payload.get("wishlist_status", payload.get("status", ""))
+    ).strip().casefold()
+    if wishlist_status not in ("wanted", "acquired", "dismissed"):
+        return jsonify({
+            "error": "Wishlist status must be wanted, acquired, or dismissed."
+        }), 400
+    if db().execute(
+        "SELECT 1 FROM wishlist_items WHERE id = ?", (item_id,)
+    ).fetchone() is None:
+        return jsonify({"error": "Wishlist item not found."}), 404
+    now = datetime.now(timezone.utc).isoformat()
+    acquired_at = now if wishlist_status == "acquired" else None
+    dismissed_at = now if wishlist_status == "dismissed" else None
+    try:
+        db().execute(
+            """
+            UPDATE wishlist_items
+            SET wishlist_status = ?, acquired_at = ?, dismissed_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (wishlist_status, acquired_at, dismissed_at, now, item_id),
+        )
+        db().commit()
+    except sqlite3.Error:
+        db().rollback()
+        app.logger.exception(
+            "Wishlist status update failed item_id=%s status=%s",
+            item_id, wishlist_status,
+        )
+        return jsonify({"error": "Wishlist status could not be updated."}), 500
+    row = db().execute(
+        "SELECT * FROM wishlist_items WHERE id = ?", (item_id,)
+    ).fetchone()
+    return jsonify(wishlist_to_dict(row))
 
 
 @app.delete("/api/wishlist/<int:item_id>")
