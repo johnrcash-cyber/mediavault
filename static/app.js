@@ -958,6 +958,7 @@ function openWishlistDetail(item) {
     return;
   }
   state.wishlistDetailItem = item;
+  const wishlistStatus = item.wishlist_status || "wanted";
   $("#wishlistDetailTitle").textContent = item.title;
   $("#wishlistDetailType").textContent = `${item.media_type || "WISHLIST"} · WISHLIST`;
   $("#wishlistDetailSubtitle").textContent = [
@@ -976,9 +977,9 @@ function openWishlistDetail(item) {
     fact("Runtime", item.runtime_minutes ? `${item.runtime_minutes} min` : ""),
     fact("Genres", item.genres),
     fact("Enrichment", item.enrichment_status || item.metadata_status),
-    fact("Wishlist status", item.wishlist_status
-      ? item.wishlist_status[0].toUpperCase() + item.wishlist_status.slice(1)
-      : "Wanted"),
+    fact("Wishlist status", wishlistStatus[0].toUpperCase() + wishlistStatus.slice(1)),
+    fact("Acquired", item.acquired_at ? new Date(item.acquired_at).toLocaleString() : ""),
+    fact("Dismissed", item.dismissed_at ? new Date(item.dismissed_at).toLocaleString() : ""),
     fact("Last enriched", item.enriched_at ? new Date(item.enriched_at).toLocaleString() : ""),
   ].join("");
   $("#wishlistDetailChips").innerHTML =
@@ -988,8 +989,28 @@ function openWishlistDetail(item) {
   $("#wishlistDetailPoster").classList.toggle("has-image", Boolean(item.poster_url));
   $("#wishlistDetailNotes").hidden = !item.notes;
   $("#wishlistDetailNotes p").textContent = item.notes || "";
+  $("#markWishlistAcquired").disabled = wishlistStatus === "acquired";
+  $("#markWishlistDismissed").disabled = wishlistStatus === "dismissed";
+  $("#restoreWishlistWanted").hidden = wishlistStatus === "wanted";
   $("#wishlistDetail").hidden = false;
   document.body.style.overflow = "hidden";
+}
+
+async function updateWishlistStatus(wishlistStatus) {
+  const item = state.wishlistDetailItem;
+  if (!item) return;
+  const updated = await api(`/api/wishlist/${item.id}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ wishlist_status: wishlistStatus }),
+  });
+  state.wishlistDetailItem = updated;
+  const index = state.wishlistItems.findIndex(
+    (candidate) => candidate.id === updated.id
+  );
+  if (index >= 0) state.wishlistItems[index] = updated;
+  openWishlistDetail(updated);
+  renderWishlistItems();
+  toast(`Wishlist status changed to ${updated.wishlist_status}.`);
 }
 
 function closeWishlistDetail() {
@@ -1311,6 +1332,18 @@ $("#refreshWishlistMetadata").addEventListener("click", async () => {
 });
 $("#deleteWishlistDetail").addEventListener("click", async () => {
   try { await deleteWishlistItem(state.wishlistDetailItem); }
+  catch (error) { toast(error.message, 5000); }
+});
+$("#markWishlistAcquired").addEventListener("click", async () => {
+  try { await updateWishlistStatus("acquired"); }
+  catch (error) { toast(error.message, 5000); }
+});
+$("#markWishlistDismissed").addEventListener("click", async () => {
+  try { await updateWishlistStatus("dismissed"); }
+  catch (error) { toast(error.message, 5000); }
+});
+$("#restoreWishlistWanted").addEventListener("click", async () => {
+  try { await updateWishlistStatus("wanted"); }
   catch (error) { toast(error.message, 5000); }
 });
 syncDisplayViewControls();
