@@ -208,7 +208,9 @@ def init_db() -> None:
             year INTEGER,
             media_type TEXT,
             notes TEXT,
-            status TEXT NOT NULL DEFAULT 'Open',
+            status TEXT NOT NULL DEFAULT 'Wanted',
+            acquired_at TEXT,
+            dismissed_at TEXT,
             metadata_status TEXT NOT NULL DEFAULT 'Pending',
             poster_url TEXT,
             overview TEXT,
@@ -235,7 +237,9 @@ def init_db() -> None:
         "year": "INTEGER",
         "media_type": "TEXT",
         "notes": "TEXT",
-        "status": "TEXT DEFAULT 'Open'",
+        "status": "TEXT DEFAULT 'Wanted'",
+        "acquired_at": "TEXT",
+        "dismissed_at": "TEXT",
         "metadata_status": "TEXT DEFAULT 'Pending'",
         "poster_url": "TEXT",
         "overview": "TEXT",
@@ -256,8 +260,8 @@ def init_db() -> None:
             )
     migration_now = datetime.now(timezone.utc).isoformat()
     connection.execute(
-        "UPDATE wishlist_items SET status = 'Open' "
-        "WHERE status IS NULL OR status = ''"
+        "UPDATE wishlist_items SET status = 'Wanted' "
+        "WHERE status IS NULL OR status = '' OR status = 'Open'"
     )
     connection.execute(
         "UPDATE wishlist_items SET metadata_status = 'Pending' "
@@ -325,6 +329,7 @@ def row_to_card_dict(row: sqlite3.Row) -> dict:
 
 def wishlist_to_dict(row: sqlite3.Row) -> dict:
     item = dict(row)
+    item["wishlist_status"] = item.get("status") or "Wanted"
     try:
         item["genres"] = json.loads(item.get("genres") or "[]")
     except json.JSONDecodeError:
@@ -359,7 +364,7 @@ def clean_wishlist_payload(payload: dict) -> dict:
 def enrich_wishlist_item(item_id: int) -> dict:
     """Enrich a wishlist row without ever creating or changing catalog media."""
     item = db().execute(
-        "SELECT * FROM wishlist_items WHERE id = ? AND status = 'Open'",
+        "SELECT * FROM wishlist_items WHERE id = ?",
         (item_id,),
     ).fetchone()
     if item is None:
@@ -2394,8 +2399,12 @@ def delete_media(item_id: int):
 @app.get("/api/wishlist")
 def list_wishlist_items():
     rows = db().execute(
-        "SELECT * FROM wishlist_items WHERE status = 'Open' "
-        "ORDER BY created_at DESC, id DESC"
+        """
+        SELECT * FROM wishlist_items
+        ORDER BY
+            CASE status WHEN 'Wanted' THEN 0 WHEN 'Acquired' THEN 1 ELSE 2 END,
+            created_at DESC, id DESC
+        """
     ).fetchall()
     return jsonify([wishlist_to_dict(row) for row in rows])
 
@@ -2413,7 +2422,7 @@ def create_wishlist_item():
             INSERT INTO wishlist_items (
                 user_id, title, artist, year, media_type, notes, status,
                 metadata_status, created_at, updated_at
-            ) VALUES (NULL, ?, ?, ?, ?, ?, 'Open', 'Pending', ?, ?)
+            ) VALUES (NULL, ?, ?, ?, ?, ?, 'Wanted', 'Pending', ?, ?)
             """,
             (
                 item["title"], item["artist"], item["year"], item["media_type"],
@@ -2445,7 +2454,7 @@ def update_wishlist_item(item_id: int):
     except (ValueError, TypeError) as exc:
         return jsonify({"error": str(exc)}), 400
     existing = db().execute(
-        "SELECT * FROM wishlist_items WHERE id = ? AND status = 'Open'",
+        "SELECT * FROM wishlist_items WHERE id = ?",
         (item_id,),
     ).fetchone()
     if existing is None:
@@ -2466,7 +2475,7 @@ def update_wishlist_item(item_id: int):
         f"""
         UPDATE wishlist_items SET title = ?, artist = ?, year = ?,
             media_type = ?, notes = ?, updated_at = ? {reset_metadata}
-        WHERE id = ? AND status = 'Open'
+        WHERE id = ?
         """,
         (
             item["title"], item["artist"], item["year"], item["media_type"],
@@ -2488,7 +2497,7 @@ def update_wishlist_item(item_id: int):
 @app.post("/api/wishlist/<int:item_id>/refresh")
 def refresh_wishlist_metadata(item_id: int):
     row = db().execute(
-        "SELECT id FROM wishlist_items WHERE id = ? AND status = 'Open'",
+        "SELECT id FROM wishlist_items WHERE id = ?",
         (item_id,),
     ).fetchone()
     if row is None:
@@ -2505,6 +2514,48 @@ def refresh_wishlist_metadata(item_id: int):
     db().commit()
     enrich_wishlist_item_async(item_id)
     return jsonify({"status": "Pending", "id": item_id}), 202
+
+
+@app.patch("/api/wishlist/<int:item_id>/status")
+def update_wishlist_status(item_id: int):
+    payload = request.get_json(silent=True) or {}
+    requested = str(
+        payload.get("wishlist_status", payload.get("status", ""))
+    ).strip().casefold()
+    statuses = {
+        "wanted": "Wanted",
+        "acquired": "Acquired",
+        "dismissed": "Dismissed",
+    }
+    status = statuses.get(requested)
+    if status is None:
+        return jsonify({
+            "error": "Wishlist status must be Wanted, Acquired, or Dismissed."
+        }), 400
+    existing = db().execute(
+        "SELECT id FROM wishlist_items WHERE id = ?", (item_id,)
+    ).fetchone()
+    if existing is None:
+        return jsonify({"error": "Wishlist item not found."}), 404
+    now = datetime.now(timezone.utc).isoformat()
+    acquired_at = now if status == "Acquired" else None
+    dismissed_at = now if status == "Dismissed" else None
+    db().execute(
+        """
+        UPDATE wishlist_items
+        SET status = ?, acquired_at = ?, dismissed_at = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (status, acquired_at, dismissed_at, now, item_id),
+    )
+    db().commit()
+    row = db().execute(
+        "SELECT * FROM wishlist_items WHERE id = ?", (item_id,)
+    ).fetchone()
+    app.logger.info(
+        "Wishlist status updated item_id=%s status=%s", item_id, status
+    )
+    return jsonify(wishlist_to_dict(row))
 
 
 @app.delete("/api/wishlist/<int:item_id>")
@@ -2536,7 +2587,7 @@ def dashboard():
             "SELECT COUNT(*) FROM media WHERE media_type = 'Games'"
         ).fetchone()[0],
         "wishlist": connection.execute(
-            "SELECT COUNT(*) FROM wishlist_items WHERE status = 'Open'"
+            "SELECT COUNT(*) FROM wishlist_items WHERE status = 'Wanted'"
         ).fetchone()[0],
     }
     recent = connection.execute(

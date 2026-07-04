@@ -301,9 +301,19 @@
           <div class="source-chips" id="wishlistDetailChips"></div>
           <p class="quick-overview" id="wishlistDetailOverview"></p>
           <div class="metadata-labels"><span>Metadata Provider</span><span id="wishlistDetailProvider">Manual / none</span></div>
+          <div class="wishlist-detail-tags" id="wishlistDetailTags" hidden>
+            <small>TAGS (CLICK TO FILTER)</small>
+            <div class="metadata-tag-list"></div>
+          </div>
           <div class="metadata-grid" id="wishlistDetailMetadata"></div>
           <div class="notes-section" id="wishlistDetailNotes" hidden><small>NOTES</small><p></p></div>
         </div>
+      </div>
+      <div class="wishlist-status-bar">
+        <div class="wishlist-status-heading"><small>CHANGE STATUS</small><span>Update this item in your wishlist history.</span></div>
+        <button class="wishlist-status-action acquired" id="markWishlistAcquired"><strong>✓ Mark as Acquired</strong><span>I now own this item</span></button>
+        <button class="wishlist-status-action dismissed" id="markWishlistDismissed"><strong>◷ Mark as Dismissed</strong><span>No longer want this</span></button>
+        <button class="wishlist-status-action remove" id="removeWishlistBottom"><strong>⌫ Remove from Wishlist</strong><span>Delete from wishlist</span></button>
       </div>
     </div>
   </div>
