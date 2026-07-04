@@ -36,6 +36,7 @@
       <nav>
         <button class="nav-link active" data-view="dashboard"><span>⌂</span> Dashboard</button>
         <button class="nav-link" data-view="collection"><span>▦</span> My Library</button>
+        <a class="nav-link" href="{{ url_for('profile') }}"><span>●</span> Profile</a>
         <p class="nav-label">COLLECTIONS</p>
         <button class="nav-link type-link" data-type="Movies"><span>▰</span> Movies</button>
         <button class="nav-link type-link" data-type="Television"><span>▣</span> Television</button>
@@ -48,8 +49,13 @@
         <p class="nav-label">SYSTEM</p>
         <button class="nav-link" id="refreshLibraryAction"><span>↻</span> Refresh Library</button>
         <button class="nav-link" data-view="settings"><span>⚙</span> Settings</button>
+        {% if is_admin %}<a class="nav-link" href="{{ url_for('administration') }}"><span>◆</span> Administration</a>{% endif %}
       </nav>
-      <div class="sidebar-foot"><span class="status-dot"></span><span><strong>Local library</strong><small>Stored securely on this device</small><em>Built by Arbiter Labs</em></span></div>
+      <div class="sidebar-foot account-foot">
+        <span class="status-dot"></span>
+        <span><strong>{{ current_user.display_name }}</strong><small>{{ current_user.role|title }}</small><em>Built by Arbiter Labs</em></span>
+        <form action="{{ url_for('logout') }}" method="post"><button type="submit" title="Logout">↪</button></form>
+      </div>
     </aside>
 
     <main>

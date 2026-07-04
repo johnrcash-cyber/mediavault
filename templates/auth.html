@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if mode == 'setup' %}Create Admin{% elif mode == 'forgot' %}Password Reset{% else %}Sign In{% endif %} — MediaVault</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='base.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='auth.css') }}">
+</head>
+<body class="auth-page">
+  <main class="auth-shell">
+    <a class="auth-brand" href="{{ url_for('index') }}">
+      <span class="brand-mark">MV</span>
+      <span><strong>MediaVault</strong><small>KNOW WHAT YOU OWN</small></span>
+    </a>
+    <section class="auth-card">
+      {% if mode == "setup" %}
+        <p class="eyebrow">FIRST-RUN SETUP</p>
+        <h1>Create Admin Account</h1>
+        <p>This first account manages access to MediaVault.</p>
+        {% if error %}<p class="auth-error">{{ error }}</p>{% endif %}
+        <form class="auth-form" method="post">
+          <label>Display Name<input name="display_name" required autocomplete="name" value="{{ values.display_name }}"></label>
+          <label>Email<input name="email" type="email" required autocomplete="email" value="{{ values.email }}"></label>
+          <label>Password<input name="password" type="password" required minlength="8" autocomplete="new-password"></label>
+          <label>Confirm Password<input name="confirm_password" type="password" required minlength="8" autocomplete="new-password"></label>
+          <button class="button primary" type="submit">Create Admin Account</button>
+        </form>
+      {% elif mode == "forgot" %}
+        <p class="eyebrow">ACCOUNT ACCESS</p>
+        <h1>Password Reset</h1>
+        <p>Password reset coming soon.</p>
+        <div class="auth-links"><a href="{{ url_for('sign_in') }}">← Back to Sign In</a></div>
+      {% else %}
+        <p class="eyebrow">WELCOME BACK</p>
+        <h1>Sign In</h1>
+        <p>Open your library and continue cataloging.</p>
+        {% if error %}<p class="auth-error">{{ error }}</p>{% endif %}
+        <form class="auth-form" method="post">
+          <label>Email<input name="email" type="email" required autocomplete="email" autofocus value="{{ values.email }}"></label>
+          <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
+          <button class="button primary" type="submit">Sign In</button>
+        </form>
+        <div class="auth-links"><a href="{{ url_for('forgot_password') }}">Forgot Password?</a><span>Accounts are admin-managed.</span></div>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>

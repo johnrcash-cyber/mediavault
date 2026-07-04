@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Access Denied — MediaVault</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='base.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='auth.css') }}">
+</head>
+<body class="auth-page"><main class="auth-shell"><section class="auth-card"><p class="eyebrow">ACCESS DENIED</p><h1>Administrator only</h1><p>Your account does not have access to this area.</p><div class="auth-links"><a href="{{ url_for('index') }}">← Return to MediaVault</a></div></section></main></body>
+</html>

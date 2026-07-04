@@ -5,6 +5,7 @@ import os
 import sqlite3
 import json
 import re
+import secrets
 import threading
 import urllib.error
 import urllib.parse
@@ -15,7 +16,11 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from flask import Flask, Response, g, jsonify, render_template, request
+from flask import (
+    Flask, Response, g, jsonify, redirect, render_template, request, session,
+    url_for,
+)
+from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 
@@ -27,6 +32,37 @@ PUBLIC_ORIGIN = os.environ.get(
 
 app = Flask(__name__)
 app.config["PREFERRED_URL_SCHEME"] = "https"
+app.config["REGISTRATION_MODE"] = os.environ.get(
+    "MEDIAVAULT_REGISTRATION_MODE", "admin_only"
+)
+
+
+def load_secret_key() -> str:
+    """Keep sessions stable across restarts without committing a secret."""
+    configured = os.environ.get("MEDIAVAULT_SECRET_KEY")
+    if configured:
+        return configured
+    secret_path = BASE_DIR / "data" / ".session_secret"
+    secret_path.parent.mkdir(parents=True, exist_ok=True)
+    if secret_path.exists():
+        return secret_path.read_text(encoding="utf-8").strip()
+    generated = secrets.token_hex(32)
+    try:
+        with secret_path.open("x", encoding="utf-8") as secret_file:
+            secret_file.write(generated)
+        return generated
+    except FileExistsError:
+        # Another production worker won first-run initialization.
+        return secret_path.read_text(encoding="utf-8").strip()
+
+
+app.secret_key = load_secret_key()
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    # Enable in HTTPS deployments; leaving it configurable preserves local HTTP mode.
+    SESSION_COOKIE_SECURE=os.environ.get("MEDIAVAULT_SECURE_COOKIES", "0") == "1",
+)
 app.wsgi_app = ProxyFix(
     app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1
 )
@@ -58,6 +94,21 @@ def close_db(_error=None):
 def init_db() -> None:
     DATABASE.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DATABASE)
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            password_hash TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user'
+                CHECK(role IN ('admin', 'user')),
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            last_login TEXT
+        )
+        """
+    )
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS media (
@@ -306,6 +357,35 @@ def init_db() -> None:
     )
     connection.commit()
     connection.close()
+
+
+def users_exist() -> bool:
+    return bool(db().execute("SELECT 1 FROM users LIMIT 1").fetchone())
+
+
+def current_user() -> sqlite3.Row | None:
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+    return db().execute(
+        "SELECT id, email, display_name, role, active, created_at, last_login "
+        "FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+
+
+def safe_next_url(candidate: str | None) -> str:
+    """Only permit local post-login destinations."""
+    if candidate and candidate.startswith("/") and not candidate.startswith("//"):
+        return candidate
+    return url_for("index")
+
+
+def require_admin():
+    user = current_user()
+    if not user or user["role"] != "admin":
+        return None
+    return user
 
 
 def row_to_dict(row: sqlite3.Row) -> dict:
@@ -2043,11 +2123,183 @@ def compare_jellyfin_movies(items: list[dict], library: dict, server_url: str) -
     return result
 
 
+@app.route("/setup", methods=["GET", "POST"])
+def setup_admin():
+    if users_exist():
+        return redirect(url_for("sign_in"))
+    error = ""
+    values = {
+        "display_name": request.form.get("display_name", "").strip(),
+        "email": request.form.get("email", "").strip().casefold(),
+    }
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        confirmation = request.form.get("confirm_password", "")
+        if not values["display_name"] or "@" not in values["email"]:
+            error = "Enter a display name and valid email address."
+        elif len(password) < 8:
+            error = "Password must be at least 8 characters."
+        elif password != confirmation:
+            error = "Passwords do not match."
+        else:
+            now = datetime.now(timezone.utc).isoformat()
+            try:
+                cursor = db().execute(
+                    """
+                    INSERT INTO users (
+                        email, password_hash, display_name, role, active,
+                        created_at
+                    ) VALUES (?, ?, ?, 'admin', 1, ?)
+                    """,
+                    (
+                        values["email"],
+                        generate_password_hash(password),
+                        values["display_name"],
+                        now,
+                    ),
+                )
+                db().commit()
+                session.clear()
+                session["user_id"] = cursor.lastrowid
+                return redirect(url_for("index"))
+            except sqlite3.IntegrityError:
+                error = "That email address is already registered."
+    return render_template(
+        "auth.html", mode="setup", error=error, values=values,
+    )
+
+
+@app.route("/sign-in", methods=["GET", "POST"])
+def sign_in():
+    if not users_exist():
+        return redirect(url_for("setup_admin"))
+    if current_user():
+        return redirect(url_for("index"))
+    error = ""
+    email = request.form.get("email", "").strip().casefold()
+    if request.method == "POST":
+        user = db().execute(
+            "SELECT * FROM users WHERE email = ?",
+            (email,),
+        ).fetchone()
+        if (
+            not user
+            or not user["active"]
+            or not check_password_hash(user["password_hash"], request.form.get("password", ""))
+        ):
+            error = "Invalid email or password."
+        else:
+            now = datetime.now(timezone.utc).isoformat()
+            db().execute(
+                "UPDATE users SET last_login = ? WHERE id = ?",
+                (now, user["id"]),
+            )
+            db().commit()
+            session.clear()
+            session["user_id"] = user["id"]
+            return redirect(safe_next_url(request.args.get("next")))
+    return render_template(
+        "auth.html", mode="signin", error=error, values={"email": email},
+    )
+
+
+@app.post("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("sign_in"))
+
+
+@app.get("/forgot-password")
+def forgot_password():
+    return render_template("auth.html", mode="forgot", error="", values={})
+
+
+@app.get("/profile")
+def profile():
+    return render_template("profile.html", user=current_user())
+
+
+@app.route("/administration", methods=["GET", "POST"])
+def administration():
+    user = require_admin()
+    if not user:
+        return render_template("forbidden.html"), 403
+    error = ""
+    success = request.args.get("created") == "1"
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().casefold()
+        display_name = request.form.get("display_name", "").strip()
+        password = request.form.get("password", "")
+        role = request.form.get("role", "user")
+        if not display_name or "@" not in email:
+            error = "Enter a display name and valid email address."
+        elif len(password) < 8:
+            error = "Password must be at least 8 characters."
+        elif role not in ("admin", "user"):
+            error = "Choose a valid role."
+        else:
+            try:
+                db().execute(
+                    """
+                    INSERT INTO users (
+                        email, password_hash, display_name, role, active,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, 1, ?)
+                    """,
+                    (
+                        email,
+                        generate_password_hash(password),
+                        display_name,
+                        role,
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+                db().commit()
+                return redirect(url_for("administration", created=1))
+            except sqlite3.IntegrityError:
+                error = "That email address is already registered."
+    users = db().execute(
+        """
+        SELECT id, display_name, email, role, active, created_at, last_login
+        FROM users ORDER BY created_at
+        """
+    ).fetchall()
+    return render_template(
+        "administration.html",
+        user=user,
+        users=users,
+        error=error,
+        success=success,
+        registration_mode=app.config["REGISTRATION_MODE"],
+    )
+
+
+@app.before_request
+def require_authentication():
+    public_endpoints = {
+        "static", "setup_admin", "sign_in", "forgot_password",
+    }
+    if request.endpoint in public_endpoints:
+        return None
+    if not users_exist():
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "Administrator setup is required."}), 401
+        return redirect(url_for("setup_admin"))
+    if current_user():
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Authentication required."}), 401
+    return redirect(url_for("sign_in", next=request.full_path.rstrip("?")))
+
+
 @app.get("/")
 def index():
+    user = current_user()
     return render_template(
         "index.html",
         public_origin=PUBLIC_ORIGIN,
+        current_user=user,
+        is_admin=bool(user and user["role"] == "admin"),
         media_types=MEDIA_TYPES,
         formats=FORMATS,
         statuses=STATUSES,

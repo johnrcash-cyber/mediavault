@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Profile — MediaVault</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='base.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='auth.css') }}">
+</head>
+<body class="account-page">
+  <main class="account-wrap">
+    <nav class="account-nav">
+      <a class="brand" href="{{ url_for('index') }}"><span class="brand-mark">MV</span><span><strong>MediaVault</strong><small>KNOW WHAT YOU OWN</small></span></a>
+      <a href="{{ url_for('index') }}">Library</a>
+      {% if user.role == "admin" %}<a href="{{ url_for('administration') }}">Administration</a>{% endif %}
+      <form action="{{ url_for('logout') }}" method="post"><button type="submit">Logout</button></form>
+    </nav>
+    <section class="account-card">
+      <p class="eyebrow">YOUR ACCOUNT</p><h1>Profile</h1><p>Your MediaVault identity and access details.</p>
+      <div class="profile-grid">
+        <div class="profile-field"><small>Display Name</small><strong>{{ user.display_name }}</strong></div>
+        <div class="profile-field"><small>Email</small><strong>{{ user.email }}</strong></div>
+        <div class="profile-field"><small>Role</small><strong>{{ user.role|title }}</strong></div>
+        <div class="profile-field"><small>Joined</small><strong>{{ user.created_at[:10] }}</strong></div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

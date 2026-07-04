@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Administration — MediaVault</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='base.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='auth.css') }}">
+</head>
+<body class="account-page">
+  <main class="account-wrap">
+    <nav class="account-nav">
+      <a class="brand" href="{{ url_for('index') }}"><span class="brand-mark">MV</span><span><strong>MediaVault</strong><small>KNOW WHAT YOU OWN</small></span></a>
+      <a href="{{ url_for('index') }}">Library</a><a href="{{ url_for('profile') }}">Profile</a>
+      <form action="{{ url_for('logout') }}" method="post"><button type="submit">Logout</button></form>
+    </nav>
+    <section class="account-card">
+      <p class="eyebrow">SYSTEM</p><h1>Administration</h1><p>Platform access and operational foundations.</p>
+      {% if success %}<p class="auth-success">Account created.</p>{% endif %}
+      <div class="admin-grid">
+        <section class="admin-section">
+          <h2>Users</h2>
+          <div class="user-list">
+            {% for account in users %}
+            <div class="user-row">
+              <span><strong>{{ account.display_name }}</strong><small>{{ account.email }}</small></span>
+              <span class="role-pill {{ account.role }}">{{ account.role|title }}</span>
+              <time>{{ account.created_at[:10] }}</time>
+            </div>
+            {% endfor %}
+          </div>
+        </section>
+        <section class="admin-section">
+          <h2>Create Account</h2>
+          <p>Registration mode: <strong>{{ registration_mode }}</strong></p>
+          {% if error %}<p class="auth-error">{{ error }}</p>{% endif %}
+          <form class="auth-form" method="post">
+            <label>Display Name<input name="display_name" required></label>
+            <label>Email<input name="email" type="email" required></label>
+            <label>Temporary Password<input name="password" type="password" minlength="8" required></label>
+            <label>Role<select name="role"><option value="user">User</option><option value="admin">Admin</option></select></label>
+            <button class="button primary" type="submit">Create Account</button>
+          </form>
+        </section>
+      </div>
+      <div class="placeholder-list">
+        <div><strong>System</strong><small>Platform settings will live here.</small></div>
+        <div><strong>Jobs / Logs</strong><small>Background job and operational logs will live here.</small></div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

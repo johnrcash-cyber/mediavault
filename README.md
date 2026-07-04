@@ -54,6 +54,24 @@ python app.py
 
 Open it locally at `http://127.0.0.1:5050`.
 
+## Authentication
+
+On a database with no users, MediaVault opens a first-run **Create Admin
+Account** screen. Later accounts are created by an administrator; public
+registration is intentionally disabled in this first release.
+
+Authentication configuration:
+
+- `MEDIAVAULT_SECRET_KEY` optionally supplies the server-side session signing
+  secret. Otherwise MediaVault generates a private ignored secret under `data/`.
+- Set `MEDIAVAULT_SECURE_COOKIES=1` when MediaVault is served through HTTPS.
+- `MEDIAVAULT_REGISTRATION_MODE` defaults to `admin_only` and reserves a clean
+  configuration seam for future registration modes.
+
+Authentication establishes platform access only. Catalog media, Wishlist items,
+collections, and sources remain shared exactly as before; user ownership is a
+later migration.
+
 ## Reverse proxy deployment
 
 Keep Flask or Gunicorn bound to an internal interface and expose MediaVault
