@@ -113,6 +113,7 @@ def init_db() -> None:
         """
         CREATE TABLE IF NOT EXISTS media (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id INTEGER,
             title TEXT NOT NULL,
             year INTEGER,
             media_type TEXT NOT NULL,
@@ -143,8 +144,20 @@ def init_db() -> None:
     )
     connection.execute(
         """
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id INTEGER NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY(user_id, key),
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """
+    )
+    connection.execute(
+        """
         CREATE TABLE IF NOT EXISTS jellyfin_sources (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
             jellyfin_item_id TEXT NOT NULL,
             jellyfin_library_id TEXT,
             jellyfin_library_name TEXT,
@@ -157,7 +170,7 @@ def init_db() -> None:
             source_updated_at TEXT,
             source_metadata_updated_at TEXT,
             created_at TEXT NOT NULL,
-            UNIQUE(server_url, jellyfin_item_id),
+            UNIQUE(user_id, server_url, jellyfin_item_id),
             FOREIGN KEY(media_id) REFERENCES media(id) ON DELETE RESTRICT
         )
         """
@@ -182,8 +195,7 @@ def init_db() -> None:
             metadata_json TEXT NOT NULL,
             refreshed_at TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            FOREIGN KEY(media_id) REFERENCES media(id) ON DELETE CASCADE,
-            UNIQUE(provider, external_id)
+            FOREIGN KEY(media_id) REFERENCES media(id) ON DELETE CASCADE
         )
         """
     )
@@ -191,6 +203,7 @@ def init_db() -> None:
         """
         CREATE TABLE IF NOT EXISTS jellyfin_libraries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
             server_url TEXT NOT NULL,
             library_id TEXT NOT NULL,
             name TEXT NOT NULL,
@@ -199,7 +212,7 @@ def init_db() -> None:
             enabled INTEGER NOT NULL DEFAULT 0,
             imported_count INTEGER NOT NULL DEFAULT 0,
             last_sync TEXT,
-            UNIQUE(server_url, library_id)
+            UNIQUE(user_id, server_url, library_id)
         )
         """
     )
@@ -217,6 +230,7 @@ def init_db() -> None:
         """
         CREATE TABLE IF NOT EXISTS catalog_imports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
             filename TEXT NOT NULL,
             item_count INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL
@@ -242,6 +256,7 @@ def init_db() -> None:
         """
         CREATE TABLE IF NOT EXISTS import_previews (
             token TEXT PRIMARY KEY,
+            user_id INTEGER,
             filename TEXT NOT NULL,
             payload_json TEXT NOT NULL,
             created_at TEXT NOT NULL,
@@ -254,6 +269,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS wishlist_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
+            owner_id INTEGER,
             title TEXT NOT NULL,
             artist TEXT,
             year INTEGER,
@@ -278,6 +294,49 @@ def init_db() -> None:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_source_status (
+            user_id INTEGER NOT NULL,
+            source_name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            last_checked TEXT,
+            last_error TEXT,
+            PRIMARY KEY(user_id, source_name),
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS collections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            source TEXT,
+            source_collection_id TEXT,
+            collection_type TEXT NOT NULL DEFAULT 'User',
+            syncable INTEGER NOT NULL DEFAULT 0,
+            editable INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS collection_items (
+            collection_id INTEGER NOT NULL,
+            media_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(collection_id, media_id),
+            FOREIGN KEY(collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+            FOREIGN KEY(media_id) REFERENCES media(id) ON DELETE CASCADE
+        )
+        """
+    )
     wishlist_columns = {
         row[1] for row in connection.execute(
             "PRAGMA table_info(wishlist_items)"
@@ -285,6 +344,7 @@ def init_db() -> None:
     }
     wishlist_migrations = {
         "user_id": "INTEGER",
+        "owner_id": "INTEGER",
         "artist": "TEXT",
         "year": "INTEGER",
         "media_type": "TEXT",
@@ -317,6 +377,141 @@ def init_db() -> None:
                 # at the same time. Another worker adding the column is safe.
                 if "duplicate column name" not in str(exc).casefold():
                     raise
+    ownership_columns = {
+        "media": ("owner_id", "INTEGER"),
+        "jellyfin_sources": ("user_id", "INTEGER"),
+        "jellyfin_libraries": ("user_id", "INTEGER"),
+        "catalog_imports": ("user_id", "INTEGER"),
+        "import_previews": ("user_id", "INTEGER"),
+    }
+    for table, (column, definition) in ownership_columns.items():
+        columns = {
+            row[1] for row in connection.execute(
+                f"PRAGMA table_info({table})"
+            ).fetchall()
+        }
+        if column not in columns:
+            try:
+                connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                )
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).casefold():
+                    raise
+    source_schema = connection.execute(
+        "SELECT sql FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'jellyfin_sources'"
+    ).fetchone()[0].replace(" ", "").replace("\n", "").casefold()
+    if "unique(server_url,jellyfin_item_id)" in source_schema:
+        connection.execute("ALTER TABLE jellyfin_sources RENAME TO jellyfin_sources_legacy")
+        connection.execute(
+            """
+            CREATE TABLE jellyfin_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                jellyfin_item_id TEXT NOT NULL,
+                jellyfin_library_id TEXT,
+                jellyfin_library_name TEXT,
+                server_url TEXT NOT NULL,
+                media_id INTEGER,
+                source_title TEXT NOT NULL,
+                source_year INTEGER,
+                action TEXT NOT NULL CHECK(action IN ('attached', 'created', 'ignored')),
+                metadata_json TEXT,
+                source_updated_at TEXT,
+                source_metadata_updated_at TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(user_id, server_url, jellyfin_item_id),
+                FOREIGN KEY(media_id) REFERENCES media(id) ON DELETE RESTRICT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO jellyfin_sources (
+                id, user_id, jellyfin_item_id, jellyfin_library_id,
+                jellyfin_library_name, server_url, media_id, source_title,
+                source_year, action, metadata_json, source_updated_at,
+                source_metadata_updated_at, created_at
+            )
+            SELECT id, user_id, jellyfin_item_id, jellyfin_library_id,
+                jellyfin_library_name, server_url, media_id, source_title,
+                source_year, action, metadata_json, source_updated_at,
+                source_metadata_updated_at, created_at
+            FROM jellyfin_sources_legacy
+            """
+        )
+        connection.execute("DROP TABLE jellyfin_sources_legacy")
+    library_schema = connection.execute(
+        "SELECT sql FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'jellyfin_libraries'"
+    ).fetchone()[0].replace(" ", "").replace("\n", "").casefold()
+    if "unique(server_url,library_id)" in library_schema:
+        connection.execute("ALTER TABLE jellyfin_libraries RENAME TO jellyfin_libraries_legacy")
+        connection.execute(
+            """
+            CREATE TABLE jellyfin_libraries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                server_url TEXT NOT NULL,
+                library_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                collection_type TEXT NOT NULL,
+                media_category TEXT,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                imported_count INTEGER NOT NULL DEFAULT 0,
+                last_sync TEXT,
+                UNIQUE(user_id, server_url, library_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO jellyfin_libraries (
+                id, user_id, server_url, library_id, name, collection_type,
+                media_category, enabled, imported_count, last_sync
+            )
+            SELECT id, user_id, server_url, library_id, name, collection_type,
+                media_category, enabled, imported_count, last_sync
+            FROM jellyfin_libraries_legacy
+            """
+        )
+        connection.execute("DROP TABLE jellyfin_libraries_legacy")
+    attachment_schema = connection.execute(
+        "SELECT sql FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'metadata_attachments'"
+    ).fetchone()[0].replace(" ", "").replace("\n", "").casefold()
+    if "unique(provider,external_id)" in attachment_schema:
+        connection.execute(
+            "ALTER TABLE metadata_attachments "
+            "RENAME TO metadata_attachments_legacy"
+        )
+        connection.execute(
+            """
+            CREATE TABLE metadata_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                media_id INTEGER NOT NULL UNIQUE,
+                provider TEXT NOT NULL,
+                external_id TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                refreshed_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(media_id) REFERENCES media(id) ON DELETE CASCADE
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO metadata_attachments (
+                id, media_id, provider, external_id, metadata_json,
+                refreshed_at, created_at
+            )
+            SELECT id, media_id, provider, external_id, metadata_json,
+                refreshed_at, created_at
+            FROM metadata_attachments_legacy
+            """
+        )
+        connection.execute("DROP TABLE metadata_attachments_legacy")
     migration_now = datetime.now(timezone.utc).isoformat()
     connection.execute(
         "UPDATE wishlist_items SET status = 'Open' "
@@ -355,6 +550,59 @@ def init_db() -> None:
         f"WHERE status NOT IN ({allowed_statuses})",
         STATUSES,
     )
+    owner = connection.execute(
+        """
+        SELECT id FROM users
+        ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, id
+        LIMIT 1
+        """
+    ).fetchone()
+    if owner:
+        owner_id = owner[0]
+        connection.execute(
+            "UPDATE media SET owner_id = ? WHERE owner_id IS NULL",
+            (owner_id,),
+        )
+        connection.execute(
+            "UPDATE wishlist_items SET owner_id = ?, user_id = ? "
+            "WHERE owner_id IS NULL",
+            (owner_id, owner_id),
+        )
+        for table in (
+            "jellyfin_sources", "jellyfin_libraries", "catalog_imports",
+            "import_previews",
+        ):
+            connection.execute(
+                f"UPDATE {table} SET user_id = ? WHERE user_id IS NULL",
+                (owner_id,),
+            )
+        legacy_settings = connection.execute(
+            "SELECT key, value FROM app_settings WHERE key LIKE 'jellyfin_%'"
+        ).fetchall()
+        connection.executemany(
+            """
+            INSERT INTO user_settings(user_id, key, value) VALUES (?, ?, ?)
+            ON CONFLICT(user_id, key) DO NOTHING
+            """,
+            [(owner_id, row[0], row[1]) for row in legacy_settings],
+        )
+        legacy_jellyfin_status = connection.execute(
+            "SELECT * FROM source_status WHERE source_name = 'Jellyfin'"
+        ).fetchone()
+        if legacy_jellyfin_status:
+            connection.execute(
+                """
+                INSERT INTO user_source_status (
+                    user_id, source_name, status, last_checked, last_error
+                ) VALUES (?, 'Jellyfin', ?, ?, ?)
+                ON CONFLICT(user_id, source_name) DO NOTHING
+                """,
+                (
+                    owner_id, legacy_jellyfin_status[1],
+                    legacy_jellyfin_status[2],
+                    legacy_jellyfin_status[3],
+                ),
+            )
     connection.commit()
     connection.close()
 
@@ -388,8 +636,65 @@ def require_admin():
     return user
 
 
+def claim_unowned_vault(user_id: int) -> None:
+    """Attach pre-authentication data to the first administrator."""
+    connection = db()
+    connection.execute(
+        "UPDATE media SET owner_id = ? WHERE owner_id IS NULL", (user_id,)
+    )
+    connection.execute(
+        "UPDATE wishlist_items SET owner_id = ?, user_id = ? "
+        "WHERE owner_id IS NULL",
+        (user_id, user_id),
+    )
+    for table in (
+        "jellyfin_sources", "jellyfin_libraries", "catalog_imports",
+        "import_previews",
+    ):
+        connection.execute(
+            f"UPDATE {table} SET user_id = ? WHERE user_id IS NULL",
+            (user_id,),
+        )
+    legacy_settings = connection.execute(
+        "SELECT key, value FROM app_settings WHERE key LIKE 'jellyfin_%'"
+    ).fetchall()
+    connection.executemany(
+        """
+        INSERT INTO user_settings(user_id, key, value) VALUES (?, ?, ?)
+        ON CONFLICT(user_id, key) DO NOTHING
+        """,
+        [(user_id, row["key"], row["value"]) for row in legacy_settings],
+    )
+    legacy_jellyfin_status = connection.execute(
+        "SELECT * FROM source_status WHERE source_name = 'Jellyfin'"
+    ).fetchone()
+    if legacy_jellyfin_status:
+        connection.execute(
+            """
+            INSERT INTO user_source_status (
+                user_id, source_name, status, last_checked, last_error
+            ) VALUES (?, 'Jellyfin', ?, ?, ?)
+            ON CONFLICT(user_id, source_name) DO NOTHING
+            """,
+            (
+                user_id, legacy_jellyfin_status["status"],
+                legacy_jellyfin_status["last_checked"],
+                legacy_jellyfin_status["last_error"],
+            ),
+        )
+    connection.commit()
+
+
+def active_user_id() -> int:
+    user = current_user()
+    if not user:
+        raise RuntimeError("Authenticated user context is required.")
+    return int(user["id"])
+
+
 def row_to_dict(row: sqlite3.Row) -> dict:
     item = dict(row)
+    item.pop("owner_id", None)
     item["tags"] = [tag.strip() for tag in (item.get("tags") or "").split(",") if tag.strip()]
     return item
 
@@ -421,6 +726,8 @@ def row_to_card_dict(row: sqlite3.Row) -> dict:
 
 def wishlist_to_dict(row: sqlite3.Row) -> dict:
     item = dict(row)
+    item.pop("owner_id", None)
+    item.pop("user_id", None)
     item["wishlist_status"] = item.get("wishlist_status") or "wanted"
     try:
         item["genres"] = json.loads(item.get("genres") or "[]")
@@ -453,11 +760,12 @@ def clean_wishlist_payload(payload: dict) -> dict:
     }
 
 
-def enrich_wishlist_item(item_id: int) -> dict:
+def enrich_wishlist_item(item_id: int, owner_id: int) -> dict:
     """Enrich a wishlist row without ever creating or changing catalog media."""
     item = db().execute(
-        "SELECT * FROM wishlist_items WHERE id = ? AND status = 'Open'",
-        (item_id,),
+        "SELECT * FROM wishlist_items "
+        "WHERE id = ? AND owner_id = ? AND status = 'Open'",
+        (item_id, owner_id),
     ).fetchone()
     if item is None:
         raise ValueError("Wishlist item not found.")
@@ -502,7 +810,7 @@ def enrich_wishlist_item(item_id: int) -> dict:
                 provider_id = ?, enriched_at = ?, metadata_status = 'Found',
                 enrichment_status = 'Found', enrichment_error = NULL,
                 updated_at = ?
-            WHERE id = ?
+            WHERE id = ? AND owner_id = ?
             """,
             (
                 metadata.get("year"),
@@ -512,7 +820,7 @@ def enrich_wishlist_item(item_id: int) -> dict:
                 metadata.get("runtime_minutes"),
                 metadata.get("metadata_source") or "",
                 metadata.get("external_id") or "",
-                now, now, item_id,
+                now, now, item_id, owner_id,
             ),
         )
     else:
@@ -522,22 +830,23 @@ def enrich_wishlist_item(item_id: int) -> dict:
             """
             UPDATE wishlist_items SET metadata_status = ?,
                 enrichment_status = ?, enrichment_error = ?, updated_at = ?
-            WHERE id = ?
+            WHERE id = ? AND owner_id = ?
             """,
-            (status, status, message, now, item_id),
+            (status, status, message, now, item_id, owner_id),
         )
     db().commit()
     row = db().execute(
-        "SELECT * FROM wishlist_items WHERE id = ?", (item_id,)
+        "SELECT * FROM wishlist_items WHERE id = ? AND owner_id = ?",
+        (item_id, owner_id),
     ).fetchone()
     return wishlist_to_dict(row)
 
 
-def enrich_wishlist_item_async(item_id: int) -> None:
+def enrich_wishlist_item_async(item_id: int, owner_id: int) -> None:
     def worker():
         with app.app_context():
             try:
-                enrich_wishlist_item(item_id)
+                enrich_wishlist_item(item_id, owner_id)
             except Exception:
                 app.logger.exception(
                     "Wishlist metadata enrichment failed for item_id=%s", item_id
@@ -548,9 +857,13 @@ def enrich_wishlist_item_async(item_id: int) -> None:
                         """
                         UPDATE wishlist_items SET metadata_status = 'Failed',
                             enrichment_status = 'Failed',
-                            enrichment_error = ?, updated_at = ? WHERE id = ?
+                            enrichment_error = ?, updated_at = ?
+                        WHERE id = ? AND owner_id = ?
                         """,
-                        ("Unexpected metadata enrichment error.", now, item_id),
+                        (
+                            "Unexpected metadata enrichment error.", now,
+                            item_id, owner_id,
+                        ),
                     )
                     db().commit()
                 except sqlite3.Error:
@@ -615,9 +928,12 @@ def clean_payload(payload: dict) -> dict:
     }
 
 
-def jellyfin_settings() -> dict:
+def jellyfin_settings(user_id: int | None = None) -> dict:
+    user_id = user_id or active_user_id()
     rows = db().execute(
-        "SELECT key, value FROM app_settings WHERE key LIKE 'jellyfin_%'"
+        "SELECT key, value FROM user_settings "
+        "WHERE user_id = ? AND key LIKE 'jellyfin_%'",
+        (user_id,),
     ).fetchall()
     values = {row["key"]: row["value"] for row in rows}
     return {
@@ -696,17 +1012,22 @@ JELLYFIN_LIBRARY_MAP = {
 }
 
 
-def auto_sync_enabled() -> bool:
+def auto_sync_enabled(user_id: int | None = None) -> bool:
+    user_id = user_id or active_user_id()
     row = db().execute(
-        "SELECT value FROM app_settings WHERE key = 'jellyfin_auto_sync'"
+        "SELECT value FROM user_settings "
+        "WHERE user_id = ? AND key = 'jellyfin_auto_sync'",
+        (user_id,),
     ).fetchone()
     return bool(row and row["value"] == "1")
 
 
-def auto_sync_frequency() -> str:
+def auto_sync_frequency(user_id: int | None = None) -> str:
+    user_id = user_id or active_user_id()
     row = db().execute(
-        "SELECT value FROM app_settings "
-        "WHERE key = 'jellyfin_auto_sync_frequency'"
+        "SELECT value FROM user_settings "
+        "WHERE user_id = ? AND key = 'jellyfin_auto_sync_frequency'",
+        (user_id,),
     ).fetchone()
     value = row["value"] if row else "manual"
     return value if value in (
@@ -714,10 +1035,12 @@ def auto_sync_frequency() -> str:
     ) else "manual"
 
 
-def last_sync_summary() -> dict | None:
+def last_sync_summary(user_id: int | None = None) -> dict | None:
+    user_id = user_id or active_user_id()
     row = db().execute(
-        "SELECT value FROM app_settings "
-        "WHERE key = 'jellyfin_last_sync_summary'"
+        "SELECT value FROM user_settings "
+        "WHERE user_id = ? AND key = 'jellyfin_last_sync_summary'",
+        (user_id,),
     ).fetchone()
     if not row:
         return None
@@ -734,8 +1057,9 @@ def library_to_dict(row: sqlite3.Row) -> dict:
     return item
 
 
-def discover_jellyfin_libraries() -> list[dict]:
-    settings = jellyfin_settings()
+def discover_jellyfin_libraries(user_id: int | None = None) -> list[dict]:
+    user_id = user_id or active_user_id()
+    settings = jellyfin_settings(user_id)
     connection = jellyfin_connection(settings)
     server_url = normalize_server_url(settings["server_url"])
     for library in connection["libraries"]:
@@ -743,8 +1067,8 @@ def discover_jellyfin_libraries() -> list[dict]:
         mapping = JELLYFIN_LIBRARY_MAP.get(collection_type)
         existing = db().execute(
             "SELECT enabled, media_category FROM jellyfin_libraries "
-            "WHERE server_url = ? AND library_id = ?",
-            (server_url, library["id"]),
+            "WHERE user_id = ? AND server_url = ? AND library_id = ?",
+            (user_id, server_url, library["id"]),
         ).fetchone()
         category = (
             existing["media_category"] if existing and existing["media_category"]
@@ -754,23 +1078,24 @@ def discover_jellyfin_libraries() -> list[dict]:
         db().execute(
             """
             INSERT INTO jellyfin_libraries (
-                server_url, library_id, name, collection_type,
+                user_id, server_url, library_id, name, collection_type,
                 media_category, enabled
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(server_url, library_id) DO UPDATE SET
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, server_url, library_id) DO UPDATE SET
                 name = excluded.name,
                 collection_type = excluded.collection_type,
                 media_category = excluded.media_category
             """,
             (
-                server_url, library["id"], library["name"],
+                user_id, server_url, library["id"], library["name"],
                 collection_type, category, enabled,
             ),
         )
     db().commit()
     rows = db().execute(
-        "SELECT * FROM jellyfin_libraries WHERE server_url = ? ORDER BY name",
-        (server_url,),
+        "SELECT * FROM jellyfin_libraries "
+        "WHERE user_id = ? AND server_url = ? ORDER BY name",
+        (user_id, server_url),
     ).fetchall()
     return [library_to_dict(row) for row in rows]
 
@@ -787,16 +1112,18 @@ def jellyfin_item_source(raw: dict, library: sqlite3.Row) -> dict:
     return normalized
 
 
-def sync_jellyfin_libraries() -> dict:
-    settings = jellyfin_settings()
+def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
+    user_id = user_id or active_user_id()
+    settings = jellyfin_settings(user_id)
     server_url = normalize_server_url(settings["server_url"])
     libraries = db().execute(
         """
         SELECT * FROM jellyfin_libraries
-        WHERE server_url = ? AND enabled = 1 AND media_category IS NOT NULL
+        WHERE user_id = ? AND server_url = ?
+          AND enabled = 1 AND media_category IS NOT NULL
         ORDER BY name
         """,
-        (server_url,),
+        (user_id, server_url),
     ).fetchall()
     result = {
         "processed": 0, "added": 0, "updated": 0,
@@ -836,8 +1163,9 @@ def sync_jellyfin_libraries() -> dict:
                     continue
                 existing_source = db().execute(
                     "SELECT * FROM jellyfin_sources "
-                    "WHERE server_url = ? AND jellyfin_item_id = ?",
-                    (server_url, source["jellyfin_item_id"]),
+                    "WHERE user_id = ? AND server_url = ? "
+                    "AND jellyfin_item_id = ?",
+                    (user_id, server_url, source["jellyfin_item_id"]),
                 ).fetchone()
                 if existing_source:
                     source_json = json.dumps(source, separators=(",", ":"))
@@ -890,13 +1218,14 @@ def sync_jellyfin_libraries() -> dict:
                             changed and settings.get("use_metadata", True)
                         ):
                             try:
-                                enrich_media_item(media_id)
+                                enrich_media_item(media_id, user_id)
                             except (ValueError, LookupError, sqlite3.Error):
                                 pass
                     continue
                 candidates = db().execute(
-                    "SELECT id, title, year FROM media WHERE media_type = ?",
-                    (category,),
+                    "SELECT id, title, year FROM media "
+                    "WHERE owner_id = ? AND media_type = ?",
+                    (user_id, category),
                 ).fetchall()
                 match = next(
                     (
@@ -925,9 +1254,10 @@ def sync_jellyfin_libraries() -> dict:
                     columns = ", ".join(clean.keys())
                     placeholders = ", ".join("?" for _ in clean)
                     cursor = db().execute(
-                        f"INSERT INTO media ({columns}, created_at, updated_at) "
-                        f"VALUES ({placeholders}, ?, ?)",
-                        [*clean.values(), now, now],
+                        f"INSERT INTO media "
+                        f"(owner_id, {columns}, created_at, updated_at) "
+                        f"VALUES (?, {placeholders}, ?, ?)",
+                        [user_id, *clean.values(), now, now],
                     )
                     media_id = cursor.lastrowid
                     action = "created"
@@ -939,15 +1269,15 @@ def sync_jellyfin_libraries() -> dict:
                 db().execute(
                     """
                     INSERT INTO jellyfin_sources (
-                        jellyfin_item_id, jellyfin_library_id,
+                        user_id, jellyfin_item_id, jellyfin_library_id,
                         jellyfin_library_name, server_url, media_id,
                         source_title, source_year, action,
                         metadata_json, source_updated_at,
                         source_metadata_updated_at, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        source["jellyfin_item_id"], library["library_id"],
+                        user_id, source["jellyfin_item_id"], library["library_id"],
                         library["name"], server_url, media_id,
                         source["title"], source["year"], action,
                         json.dumps(source, separators=(",", ":")),
@@ -957,14 +1287,15 @@ def sync_jellyfin_libraries() -> dict:
                 )
                 if category in ("Movies", "Television", "Music"):
                     try:
-                        enrich_media_item(media_id)
+                        enrich_media_item(media_id, user_id)
                     except (ValueError, LookupError, sqlite3.Error):
                         pass
             total = db().execute(
                 "SELECT COUNT(*) FROM jellyfin_sources "
-                "WHERE server_url = ? AND jellyfin_library_id = ? "
+                "WHERE user_id = ? AND server_url = ? "
+                "AND jellyfin_library_id = ? "
                 "AND action IN ('attached', 'created')",
-                (server_url, library["library_id"]),
+                (user_id, server_url, library["library_id"]),
             ).fetchone()[0]
             db().execute(
                 "UPDATE jellyfin_libraries SET imported_count = ?, last_sync = ? "
@@ -981,9 +1312,10 @@ def sync_jellyfin_libraries() -> dict:
         result["libraries"].append(library_result)
     result["last_sync"] = now
     db().execute(
-        "INSERT INTO app_settings(key, value) VALUES('jellyfin_last_sync_summary', ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (json.dumps(result, separators=(",", ":")),),
+        "INSERT INTO user_settings(user_id, key, value) "
+        "VALUES (?, 'jellyfin_last_sync_summary', ?) "
+        "ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value",
+        (user_id, json.dumps(result, separators=(",", ":"))),
     )
     db().commit()
     return result
@@ -1065,9 +1397,15 @@ def provider_settings() -> dict:
 SOURCE_NAMES = ("Jellyfin", "OMDb", "TMDB", "MusicBrainz", "Discogs", "Last.fm")
 
 
-def source_health_configuration() -> dict[str, dict | None]:
+def source_health_configuration(
+    user_id: int | None = None,
+) -> dict[str, dict | None]:
     providers = provider_settings()
-    jellyfin = jellyfin_settings()
+    jellyfin = (
+        jellyfin_settings(user_id)
+        if user_id is not None
+        else {"server_url": "", "api_key": ""}
+    )
     configurations: dict[str, dict | None] = {
         "Jellyfin": None,
         "OMDb": None,
@@ -1161,9 +1499,9 @@ def check_source_health(name: str, config: dict | None) -> dict:
     }
 
 
-def run_source_health_checks() -> list[dict]:
+def run_source_health_checks(user_id: int | None = None) -> list[dict]:
     with app.app_context():
-        configurations = source_health_configuration()
+        configurations = source_health_configuration(user_id)
     results = []
     with ThreadPoolExecutor(max_workers=len(SOURCE_NAMES)) as executor:
         futures = {
@@ -1173,6 +1511,9 @@ def run_source_health_checks() -> list[dict]:
         for future in as_completed(futures):
             results.append(future.result())
     with app.app_context():
+        global_results = [
+            result for result in results if result["source_name"] != "Jellyfin"
+        ]
         db().executemany(
             """
             INSERT INTO source_status (
@@ -1188,9 +1529,33 @@ def run_source_health_checks() -> list[dict]:
                     result["source_name"], result["status"],
                     result["last_checked"], result["last_error"],
                 )
-                for result in results
+                for result in global_results
             ],
         )
+        jellyfin_result = next(
+            (
+                result for result in results
+                if result["source_name"] == "Jellyfin"
+            ),
+            None,
+        )
+        if user_id is not None and jellyfin_result:
+            db().execute(
+                """
+                INSERT INTO user_source_status (
+                    user_id, source_name, status, last_checked, last_error
+                ) VALUES (?, 'Jellyfin', ?, ?, ?)
+                ON CONFLICT(user_id, source_name) DO UPDATE SET
+                    status = excluded.status,
+                    last_checked = excluded.last_checked,
+                    last_error = excluded.last_error
+                """,
+                (
+                    user_id, jellyfin_result["status"],
+                    jellyfin_result["last_checked"],
+                    jellyfin_result["last_error"],
+                ),
+            )
         db().commit()
     return sorted(results, key=lambda item: SOURCE_NAMES.index(item["source_name"]))
 
@@ -1770,9 +2135,9 @@ def find_provider_title(
     return None
 
 
-def current_jellyfin_metadata(source: sqlite3.Row) -> dict:
+def current_jellyfin_metadata(source: sqlite3.Row, user_id: int) -> dict:
     cached = json.loads(source["metadata_json"] or "{}")
-    settings = jellyfin_settings()
+    settings = jellyfin_settings(user_id)
     try:
         raw = jellyfin_request(
             settings,
@@ -1845,9 +2210,12 @@ def save_metadata_attachment(
     return provider, metadata
 
 
-def enrich_media_item(item_id: int) -> tuple[str, dict]:
+def enrich_media_item(item_id: int, user_id: int | None = None) -> tuple[str, dict]:
+    user_id = user_id or active_user_id()
     item = db().execute(
-        "SELECT id, title, year, media_type FROM media WHERE id = ?", (item_id,)
+        "SELECT id, title, year, media_type FROM media "
+        "WHERE id = ? AND owner_id = ?",
+        (item_id, user_id),
     ).fetchone()
     if item is None:
         raise ValueError("Item not found.")
@@ -1863,10 +2231,11 @@ def enrich_media_item(item_id: int) -> tuple[str, dict]:
     source = db().execute(
         """
         SELECT * FROM jellyfin_sources
-        WHERE media_id = ? AND action IN ('attached', 'created')
+        WHERE media_id = ? AND user_id = ?
+          AND action IN ('attached', 'created')
         ORDER BY created_at DESC LIMIT 1
         """,
-        (item_id,),
+        (item_id, user_id),
     ).fetchone()
     app.logger.info(
         "Metadata refresh item_id=%s title=%r media_type=%s has_jellyfin=%s",
@@ -1874,12 +2243,14 @@ def enrich_media_item(item_id: int) -> tuple[str, dict]:
     )
 
     jellyfin_metadata = {}
-    use_jellyfin_metadata = bool(source and jellyfin_settings()["use_metadata"])
+    use_jellyfin_metadata = bool(
+        source and jellyfin_settings(user_id)["use_metadata"]
+    )
     if attachment and attachment["provider"] == "jellyfin" and not use_jellyfin_metadata:
         existing_metadata = {}
     if use_jellyfin_metadata:
         app.logger.info("Jellyfin metadata attempted item_id=%s", item_id)
-        jellyfin_metadata = current_jellyfin_metadata(source)
+        jellyfin_metadata = current_jellyfin_metadata(source, user_id)
         if jellyfin_metadata:
             app.logger.info(
                 "Jellyfin metadata found item_id=%s ids=%s",
@@ -2075,16 +2446,21 @@ def fetch_tmdb_movie(external_id: str) -> dict:
     return normalize_tmdb_movie(raw)
 
 
-def compare_jellyfin_movies(items: list[dict], library: dict, server_url: str) -> dict:
+def compare_jellyfin_movies(
+    items: list[dict], library: dict, server_url: str, user_id: int,
+) -> dict:
     local_rows = db().execute(
-        "SELECT id, title, year, format, status FROM media WHERE media_type = 'Movies'"
+        "SELECT id, title, year, format, status FROM media "
+        "WHERE owner_id = ? AND media_type = 'Movies'",
+        (user_id,),
     ).fetchall()
     locals_ = [dict(row) for row in local_rows]
     handled = {
         row["jellyfin_item_id"]
         for row in db().execute(
-            "SELECT jellyfin_item_id FROM jellyfin_sources WHERE server_url = ?",
-            (server_url,),
+            "SELECT jellyfin_item_id FROM jellyfin_sources "
+            "WHERE user_id = ? AND server_url = ?",
+            (user_id, server_url),
         ).fetchall()
     }
     result = {"matches": [], "possible_matches": [], "new_items": []}
@@ -2159,6 +2535,7 @@ def setup_admin():
                     ),
                 )
                 db().commit()
+                claim_unowned_vault(cursor.lastrowid)
                 session.clear()
                 session["user_id"] = cursor.lastrowid
                 return redirect(url_for("index"))
@@ -2309,12 +2686,13 @@ def index():
 
 @app.get("/api/media")
 def list_media():
+    user_id = active_user_id()
     search = request.args.get("q", "").strip()
     media_type = request.args.get("type", "").strip()
     status = request.args.get("status", "").strip()
     source = request.args.get("source", "").strip()
-    params: list = []
-    where: list[str] = []
+    params: list = [user_id]
+    where: list[str] = ["m.owner_id = ?"]
 
     if search:
         where.append(
@@ -2355,7 +2733,10 @@ def list_media():
 
 @app.get("/api/media/<int:item_id>")
 def get_media(item_id: int):
-    row = db().execute("SELECT * FROM media WHERE id = ?", (item_id,)).fetchone()
+    row = db().execute(
+        "SELECT * FROM media WHERE id = ? AND owner_id = ?",
+        (item_id, active_user_id()),
+    ).fetchone()
     if row is None:
         return jsonify({"error": "Item not found."}), 404
     item = row_to_dict(row)
@@ -2370,17 +2751,22 @@ def get_media(item_id: int):
 
 @app.get("/api/media/<int:item_id>/quick-view")
 def media_quick_view(item_id: int):
-    row = db().execute("SELECT * FROM media WHERE id = ?", (item_id,)).fetchone()
+    user_id = active_user_id()
+    row = db().execute(
+        "SELECT * FROM media WHERE id = ? AND owner_id = ?",
+        (item_id, user_id),
+    ).fetchone()
     if row is None:
         return jsonify({"error": "Item not found."}), 404
     collector = row_to_dict(row)
     source = db().execute(
         """
         SELECT * FROM jellyfin_sources
-        WHERE media_id = ? AND action IN ('attached', 'created')
+        WHERE media_id = ? AND user_id = ?
+          AND action IN ('attached', 'created')
         ORDER BY created_at DESC LIMIT 1
         """,
-        (item_id,),
+        (item_id, user_id),
     ).fetchone()
     metadata_attachment = db().execute(
         "SELECT * FROM metadata_attachments WHERE media_id = ?",
@@ -2442,11 +2828,14 @@ def refresh_media_metadata(item_id: int):
 
 @app.post("/api/metadata/refresh-all")
 def refresh_all_metadata():
+    user_id = active_user_id()
     try:
         items = db().execute(
             "SELECT id, title, media_type FROM media "
-            "WHERE media_type IN ('Movies', 'Television', 'Music') "
-            "ORDER BY media_type, title"
+            "WHERE owner_id = ? "
+            "AND media_type IN ('Movies', 'Television', 'Music') "
+            "ORDER BY media_type, title",
+            (user_id,),
         ).fetchall()
     except Exception as exc:
         app.logger.exception(
@@ -2485,7 +2874,7 @@ def refresh_all_metadata():
         result["processed"] += 1
         category["processed"] += 1
         try:
-            enrich_media_item(item["id"])
+            enrich_media_item(item["id"], user_id)
             result["enriched"] += 1
             category["enriched"] += 1
         except LookupError as exc:
@@ -2520,11 +2909,11 @@ def refresh_all_metadata():
     try:
         db().execute(
             """
-            INSERT INTO app_settings(key, value)
-            VALUES('metadata_last_refresh_summary', ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            INSERT INTO user_settings(user_id, key, value)
+            VALUES(?, 'metadata_last_refresh_summary', ?)
+            ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value
             """,
-            (json.dumps(result, separators=(",", ":")),),
+            (user_id, json.dumps(result, separators=(",", ":"))),
         )
         db().commit()
     except Exception as exc:
@@ -2578,9 +2967,9 @@ def create_media():
     columns = ", ".join(item.keys())
     placeholders = ", ".join("?" for _ in item)
     cursor = db().execute(
-        f"INSERT INTO media ({columns}, created_at, updated_at) "
-        f"VALUES ({placeholders}, ?, ?)",
-        [*item.values(), now, now],
+        f"INSERT INTO media (owner_id, {columns}, created_at, updated_at) "
+        f"VALUES (?, {placeholders}, ?, ?)",
+        [active_user_id(), *item.values(), now, now],
     )
     db().commit()
     row = db().execute("SELECT * FROM media WHERE id = ?", (cursor.lastrowid,)).fetchone()
@@ -2589,8 +2978,10 @@ def create_media():
 
 @app.put("/api/media/<int:item_id>")
 def update_media(item_id: int):
+    user_id = active_user_id()
     existing = db().execute(
-        "SELECT title, year FROM media WHERE id = ?", (item_id,)
+        "SELECT title, year FROM media WHERE id = ? AND owner_id = ?",
+        (item_id, user_id),
     ).fetchone()
     if existing is None:
         return jsonify({"error": "Item not found."}), 404
@@ -2605,25 +2996,30 @@ def update_media(item_id: int):
     assignments = ", ".join(f"{column} = ?" for column in item)
     now = datetime.now(timezone.utc).isoformat()
     db().execute(
-        f"UPDATE media SET {assignments}, updated_at = ? WHERE id = ?",
-        [*item.values(), now, item_id],
+        f"UPDATE media SET {assignments}, updated_at = ? "
+        f"WHERE id = ? AND owner_id = ?",
+        [*item.values(), now, item_id, user_id],
     )
     db().commit()
-    row = db().execute("SELECT * FROM media WHERE id = ?", (item_id,)).fetchone()
+    row = db().execute(
+        "SELECT * FROM media WHERE id = ? AND owner_id = ?",
+        (item_id, user_id),
+    ).fetchone()
     return jsonify(row_to_dict(row))
 
 
 @app.delete("/api/media/<int:item_id>")
 def delete_media(item_id: int):
     connection = db()
+    user_id = active_user_id()
     item = connection.execute(
         """
         SELECT m.id, m.title, ma.provider, ma.external_id
         FROM media m
         LEFT JOIN metadata_attachments ma ON ma.media_id = m.id
-        WHERE m.id = ?
+        WHERE m.id = ? AND m.owner_id = ?
         """,
-        (item_id,),
+        (item_id, user_id),
     ).fetchone()
     if item is None:
         app.logger.warning("Catalog deletion requested for missing id=%s", item_id)
@@ -2635,14 +3031,18 @@ def delete_media(item_id: int):
     try:
         # Source history remains available, but no longer points at a deleted item.
         connection.execute(
-            "UPDATE jellyfin_sources SET media_id = NULL WHERE media_id = ?",
-            (item_id,),
+            "UPDATE jellyfin_sources SET media_id = NULL "
+            "WHERE media_id = ? AND user_id = ?",
+            (item_id, user_id),
         )
         connection.execute(
             "UPDATE catalog_import_links SET media_id = NULL WHERE media_id = ?",
             (item_id,),
         )
-        cursor = connection.execute("DELETE FROM media WHERE id = ?", (item_id,))
+        cursor = connection.execute(
+            "DELETE FROM media WHERE id = ? AND owner_id = ?",
+            (item_id, user_id),
+        )
         if cursor.rowcount != 1:
             raise sqlite3.IntegrityError("Catalog record was not deleted.")
         connection.commit()
@@ -2662,15 +3062,19 @@ def delete_media(item_id: int):
 
 @app.get("/api/wishlist")
 def list_wishlist_items():
+    user_id = active_user_id()
     rows = db().execute(
-        "SELECT * FROM wishlist_items WHERE status = 'Open' "
-        "ORDER BY created_at DESC, id DESC"
+        "SELECT * FROM wishlist_items "
+        "WHERE owner_id = ? AND status = 'Open' "
+        "ORDER BY created_at DESC, id DESC",
+        (user_id,),
     ).fetchall()
     return jsonify([wishlist_to_dict(row) for row in rows])
 
 
 @app.post("/api/wishlist")
 def create_wishlist_item():
+    user_id = active_user_id()
     try:
         item = clean_wishlist_payload(request.get_json(silent=True) or {})
     except (ValueError, TypeError) as exc:
@@ -2680,13 +3084,13 @@ def create_wishlist_item():
         cursor = db().execute(
             """
             INSERT INTO wishlist_items (
-                user_id, title, artist, year, media_type, notes, status,
+                user_id, owner_id, title, artist, year, media_type, notes, status,
                 metadata_status, created_at, updated_at
-            ) VALUES (NULL, ?, ?, ?, ?, ?, 'Open', 'Pending', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Open', 'Pending', ?, ?)
             """,
             (
-                item["title"], item["artist"], item["year"], item["media_type"],
-                item["notes"], now, now,
+                user_id, user_id, item["title"], item["artist"], item["year"],
+                item["media_type"], item["notes"], now, now,
             ),
         )
         db().commit()
@@ -2694,7 +3098,7 @@ def create_wishlist_item():
             "SELECT * FROM wishlist_items WHERE id = ?", (cursor.lastrowid,)
         ).fetchone()
         response = wishlist_to_dict(row)
-        enrich_wishlist_item_async(cursor.lastrowid)
+        enrich_wishlist_item_async(cursor.lastrowid, user_id)
         return jsonify(response), 201
     except sqlite3.Error:
         db().rollback()
@@ -2709,13 +3113,15 @@ def create_wishlist_item():
 
 @app.put("/api/wishlist/<int:item_id>")
 def update_wishlist_item(item_id: int):
+    user_id = active_user_id()
     try:
         item = clean_wishlist_payload(request.get_json(silent=True) or {})
     except (ValueError, TypeError) as exc:
         return jsonify({"error": str(exc)}), 400
     existing = db().execute(
-        "SELECT * FROM wishlist_items WHERE id = ? AND status = 'Open'",
-        (item_id,),
+        "SELECT * FROM wishlist_items "
+        "WHERE id = ? AND owner_id = ? AND status = 'Open'",
+        (item_id, user_id),
     ).fetchone()
     if existing is None:
         return jsonify({"error": "Wishlist item not found."}), 404
@@ -2735,30 +3141,34 @@ def update_wishlist_item(item_id: int):
         f"""
         UPDATE wishlist_items SET title = ?, artist = ?, year = ?,
             media_type = ?, notes = ?, updated_at = ? {reset_metadata}
-        WHERE id = ? AND status = 'Open'
+        WHERE id = ? AND owner_id = ? AND status = 'Open'
         """,
         (
             item["title"], item["artist"], item["year"], item["media_type"],
             item["notes"], datetime.now(timezone.utc).isoformat(), item_id,
+            user_id,
         ),
     )
     db().commit()
     if cursor.rowcount == 0:
         return jsonify({"error": "Wishlist item not found."}), 404
     row = db().execute(
-        "SELECT * FROM wishlist_items WHERE id = ?", (item_id,)
+        "SELECT * FROM wishlist_items WHERE id = ? AND owner_id = ?",
+        (item_id, user_id),
     ).fetchone()
     response = wishlist_to_dict(row)
     if identity_changed:
-        enrich_wishlist_item_async(item_id)
+        enrich_wishlist_item_async(item_id, user_id)
     return jsonify(response)
 
 
 @app.post("/api/wishlist/<int:item_id>/refresh")
 def refresh_wishlist_metadata(item_id: int):
+    user_id = active_user_id()
     row = db().execute(
-        "SELECT id FROM wishlist_items WHERE id = ? AND status = 'Open'",
-        (item_id,),
+        "SELECT id FROM wishlist_items "
+        "WHERE id = ? AND owner_id = ? AND status = 'Open'",
+        (item_id, user_id),
     ).fetchone()
     if row is None:
         return jsonify({"error": "Wishlist item not found."}), 404
@@ -2767,17 +3177,18 @@ def refresh_wishlist_metadata(item_id: int):
         """
         UPDATE wishlist_items SET metadata_status = 'Pending',
             enrichment_status = 'Pending', enrichment_error = NULL,
-            updated_at = ? WHERE id = ?
+            updated_at = ? WHERE id = ? AND owner_id = ?
         """,
-        (now, item_id),
+        (now, item_id, user_id),
     )
     db().commit()
-    enrich_wishlist_item_async(item_id)
+    enrich_wishlist_item_async(item_id, user_id)
     return jsonify({"status": "Pending", "id": item_id}), 202
 
 
 @app.patch("/api/wishlist/<int:item_id>/status")
 def update_wishlist_status(item_id: int):
+    user_id = active_user_id()
     payload = request.get_json(silent=True) or {}
     wishlist_status = str(
         payload.get("wishlist_status", payload.get("status", ""))
@@ -2787,7 +3198,8 @@ def update_wishlist_status(item_id: int):
             "error": "Wishlist status must be wanted, acquired, or dismissed."
         }), 400
     if db().execute(
-        "SELECT 1 FROM wishlist_items WHERE id = ?", (item_id,)
+        "SELECT 1 FROM wishlist_items WHERE id = ? AND owner_id = ?",
+        (item_id, user_id),
     ).fetchone() is None:
         return jsonify({"error": "Wishlist item not found."}), 404
     now = datetime.now(timezone.utc).isoformat()
@@ -2799,9 +3211,12 @@ def update_wishlist_status(item_id: int):
             UPDATE wishlist_items
             SET wishlist_status = ?, acquired_at = ?, dismissed_at = ?,
                 updated_at = ?
-            WHERE id = ?
+            WHERE id = ? AND owner_id = ?
             """,
-            (wishlist_status, acquired_at, dismissed_at, now, item_id),
+            (
+                wishlist_status, acquired_at, dismissed_at, now, item_id,
+                user_id,
+            ),
         )
         db().commit()
     except sqlite3.Error:
@@ -2812,7 +3227,8 @@ def update_wishlist_status(item_id: int):
         )
         return jsonify({"error": "Wishlist status could not be updated."}), 500
     row = db().execute(
-        "SELECT * FROM wishlist_items WHERE id = ?", (item_id,)
+        "SELECT * FROM wishlist_items WHERE id = ? AND owner_id = ?",
+        (item_id, user_id),
     ).fetchone()
     return jsonify(wishlist_to_dict(row))
 
@@ -2820,7 +3236,8 @@ def update_wishlist_status(item_id: int):
 @app.delete("/api/wishlist/<int:item_id>")
 def delete_wishlist_item(item_id: int):
     cursor = db().execute(
-        "DELETE FROM wishlist_items WHERE id = ?", (item_id,)
+        "DELETE FROM wishlist_items WHERE id = ? AND owner_id = ?",
+        (item_id, active_user_id()),
     )
     db().commit()
     if cursor.rowcount == 0:
@@ -2831,22 +3248,30 @@ def delete_wishlist_item(item_id: int):
 @app.get("/api/dashboard")
 def dashboard():
     connection = db()
+    user_id = active_user_id()
     counts = {
-        "total": connection.execute("SELECT COUNT(*) FROM media").fetchone()[0],
+        "total": connection.execute(
+            "SELECT COUNT(*) FROM media WHERE owner_id = ?", (user_id,)
+        ).fetchone()[0],
         "movies": connection.execute(
-            "SELECT COUNT(*) FROM media WHERE media_type = 'Movies'"
+            "SELECT COUNT(*) FROM media "
+            "WHERE owner_id = ? AND media_type = 'Movies'", (user_id,)
         ).fetchone()[0],
         "television": connection.execute(
-            "SELECT COUNT(*) FROM media WHERE media_type = 'Television'"
+            "SELECT COUNT(*) FROM media "
+            "WHERE owner_id = ? AND media_type = 'Television'", (user_id,)
         ).fetchone()[0],
         "music": connection.execute(
-            "SELECT COUNT(*) FROM media WHERE media_type = 'Music'"
+            "SELECT COUNT(*) FROM media "
+            "WHERE owner_id = ? AND media_type = 'Music'", (user_id,)
         ).fetchone()[0],
         "games": connection.execute(
-            "SELECT COUNT(*) FROM media WHERE media_type = 'Games'"
+            "SELECT COUNT(*) FROM media "
+            "WHERE owner_id = ? AND media_type = 'Games'", (user_id,)
         ).fetchone()[0],
         "wishlist": connection.execute(
-            "SELECT COUNT(*) FROM wishlist_items WHERE status = 'Open'"
+            "SELECT COUNT(*) FROM wishlist_items "
+            "WHERE owner_id = ? AND status = 'Open'", (user_id,)
         ).fetchone()[0],
     }
     recent = connection.execute(
@@ -2859,8 +3284,10 @@ def dashboard():
                ) AS has_jellyfin
         FROM media m
         LEFT JOIN metadata_attachments ma ON ma.media_id = m.id
+        WHERE m.owner_id = ?
         ORDER BY m.created_at DESC, m.id DESC LIMIT 5
-        """
+        """,
+        (user_id,),
     ).fetchall()
     return jsonify({**counts, "recent": [row_to_card_dict(row) for row in recent]})
 
@@ -2868,10 +3295,14 @@ def dashboard():
 @app.get("/api/sources")
 def source_summary():
     connection = db()
-    total = connection.execute("SELECT COUNT(*) FROM media").fetchone()[0]
+    user_id = active_user_id()
+    total = connection.execute(
+        "SELECT COUNT(*) FROM media WHERE owner_id = ?", (user_id,)
+    ).fetchone()[0]
     metadata_refresh_row = connection.execute(
-        "SELECT value FROM app_settings "
-        "WHERE key = 'metadata_last_refresh_summary'"
+        "SELECT value FROM user_settings "
+        "WHERE user_id = ? AND key = 'metadata_last_refresh_summary'",
+        (user_id,),
     ).fetchone()
     metadata_refresh = None
     if metadata_refresh_row:
@@ -2881,40 +3312,54 @@ def source_summary():
             app.logger.warning("Stored metadata refresh summary is invalid JSON")
     jellyfin_count = connection.execute(
         "SELECT COUNT(DISTINCT media_id) FROM jellyfin_sources "
-        "WHERE media_id IS NOT NULL AND action IN ('attached', 'created')"
+        "WHERE user_id = ? AND media_id IS NOT NULL "
+        "AND action IN ('attached', 'created')",
+        (user_id,),
     ).fetchone()[0]
     import_count = connection.execute(
         "SELECT COUNT(DISTINCT media_id) FROM catalog_import_links "
-        "WHERE media_id IS NOT NULL AND action IN ('attached', 'created')"
+        "WHERE media_id IN (SELECT id FROM media WHERE owner_id = ?) "
+        "AND action IN ('attached', 'created')",
+        (user_id,),
     ).fetchone()[0]
     manual_count = connection.execute(
         """
         SELECT COUNT(*) FROM media m
-        WHERE NOT EXISTS (
-            SELECT 1 FROM jellyfin_sources js WHERE js.media_id = m.id
+        WHERE m.owner_id = ? AND NOT EXISTS (
+            SELECT 1 FROM jellyfin_sources js
+            WHERE js.media_id = m.id AND js.user_id = ?
         ) AND NOT EXISTS (
             SELECT 1 FROM catalog_import_links ci WHERE ci.media_id = m.id
         )
-        """
+        """,
+        (user_id, user_id),
     ).fetchone()[0]
     jellyfin = jellyfin_settings()
     disabled_row = connection.execute(
-        "SELECT value FROM app_settings WHERE key = 'jellyfin_source_disabled'"
+        "SELECT value FROM user_settings "
+        "WHERE user_id = ? AND key = 'jellyfin_source_disabled'",
+        (user_id,),
     ).fetchone()
     jellyfin_disabled = bool(disabled_row and disabled_row["value"] == "1")
     health = connection.execute(
-        "SELECT status FROM source_status WHERE source_name = 'Jellyfin'"
+        "SELECT status FROM user_source_status "
+        "WHERE user_id = ? AND source_name = 'Jellyfin'",
+        (user_id,),
     ).fetchone()
     libraries = connection.execute(
         "SELECT COUNT(*) AS total, "
         "SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) AS enabled "
-        "FROM jellyfin_libraries"
+        "FROM jellyfin_libraries WHERE user_id = ?",
+        (user_id,),
     ).fetchone()
     last_sync = connection.execute(
-        "SELECT MAX(last_sync) FROM jellyfin_libraries"
+        "SELECT MAX(last_sync) FROM jellyfin_libraries WHERE user_id = ?",
+        (user_id,),
     ).fetchone()[0]
     last_import = connection.execute(
-        "SELECT * FROM catalog_imports ORDER BY created_at DESC LIMIT 1"
+        "SELECT * FROM catalog_imports WHERE user_id = ? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (user_id,),
     ).fetchone()
     instances = []
     if jellyfin["server_url"] and jellyfin["api_key"]:
@@ -2938,7 +3383,8 @@ def source_summary():
         })
     import_instances = connection.execute(
         "SELECT id, filename, item_count, created_at FROM catalog_imports "
-        "ORDER BY created_at DESC"
+        "WHERE user_id = ? ORDER BY created_at DESC",
+        (user_id,),
     ).fetchall()
     for source_import in import_instances:
         instances.append({
@@ -2986,7 +3432,10 @@ def source_summary():
 @app.get("/api/catalog/export")
 def export_catalog():
     connection = db()
-    rows = connection.execute("SELECT * FROM media ORDER BY id").fetchall()
+    user_id = active_user_id()
+    rows = connection.execute(
+        "SELECT * FROM media WHERE owner_id = ? ORDER BY id", (user_id,)
+    ).fetchall()
     catalog_items = []
     for row in rows:
         collector = row_to_dict(row)
@@ -2998,8 +3447,8 @@ def export_catalog():
         jellyfin_rows = connection.execute(
             "SELECT jellyfin_item_id, jellyfin_library_id, "
             "jellyfin_library_name, source_title, source_year, action "
-            "FROM jellyfin_sources WHERE media_id = ?",
-            (row["id"],),
+            "FROM jellyfin_sources WHERE media_id = ? AND user_id = ?",
+            (row["id"], user_id),
         ).fetchall()
         import_rows = connection.execute(
             "SELECT source_key, action FROM catalog_import_links "
@@ -3040,6 +3489,7 @@ def export_catalog():
 
 @app.post("/api/catalog/import/preview")
 def preview_catalog_import():
+    user_id = active_user_id()
     upload = request.files.get("file")
     if not upload or not upload.filename:
         return jsonify({"error": "Choose a MediaVault JSON export file."}), 400
@@ -3058,7 +3508,9 @@ def preview_catalog_import():
     )
     existing = [
         dict(row) for row in db().execute(
-            "SELECT id, title, year, media_type, format, status FROM media"
+            "SELECT id, title, year, media_type, format, status "
+            "FROM media WHERE owner_id = ?",
+            (user_id,),
         ).fetchall()
     ]
     preview_items = []
@@ -3114,10 +3566,11 @@ def preview_catalog_import():
         })
     token = uuid.uuid4().hex
     db().execute(
-        "INSERT INTO import_previews(token, filename, payload_json, created_at) "
-        "VALUES (?, ?, ?, ?)",
+        "INSERT INTO import_previews("
+        "token, user_id, filename, payload_json, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
         (
-            token, upload.filename,
+            token, user_id, upload.filename,
             json.dumps(preview_items, separators=(",", ":")),
             datetime.now(timezone.utc).isoformat(),
         ),
@@ -3128,6 +3581,7 @@ def preview_catalog_import():
 
 @app.post("/api/catalog/import/apply")
 def apply_catalog_import():
+    user_id = active_user_id()
     payload = request.get_json(silent=True) or {}
     token = str(payload.get("token", ""))
     index = payload.get("index")
@@ -3135,7 +3589,8 @@ def apply_catalog_import():
     if action not in ("create", "attach", "ignore"):
         return jsonify({"error": "Choose create, attach, or ignore."}), 400
     preview = db().execute(
-        "SELECT * FROM import_previews WHERE token = ?", (token,)
+        "SELECT * FROM import_previews WHERE token = ? AND user_id = ?",
+        (token, user_id),
     ).fetchone()
     if not preview:
         return jsonify({"error": "Import preview expired or was not found."}), 404
@@ -3147,14 +3602,16 @@ def apply_catalog_import():
     now = datetime.now(timezone.utc).isoformat()
     if not import_id:
         cursor = db().execute(
-            "INSERT INTO catalog_imports(filename, item_count, created_at) "
-            "VALUES (?, ?, ?)",
-            (preview["filename"], len(items), now),
+            "INSERT INTO catalog_imports("
+            "user_id, filename, item_count, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (user_id, preview["filename"], len(items), now),
         )
         import_id = cursor.lastrowid
         db().execute(
-            "UPDATE import_previews SET import_id = ? WHERE token = ?",
-            (import_id, token),
+            "UPDATE import_previews SET import_id = ? "
+            "WHERE token = ? AND user_id = ?",
+            (import_id, token, user_id),
         )
     media_id = None
     stored_action = "ignored"
@@ -3163,7 +3620,8 @@ def apply_catalog_import():
             item.get("match") or {}
         ).get("id")
         if not media_id or not db().execute(
-            "SELECT 1 FROM media WHERE id = ?", (media_id,)
+            "SELECT 1 FROM media WHERE id = ? AND owner_id = ?",
+            (media_id, user_id),
         ).fetchone():
             return jsonify({"error": "Choose a valid MediaVault item."}), 400
         stored_action = "attached"
@@ -3175,9 +3633,10 @@ def apply_catalog_import():
         columns = ", ".join(clean.keys())
         placeholders = ", ".join("?" for _ in clean)
         cursor = db().execute(
-            f"INSERT INTO media ({columns}, created_at, updated_at) "
-            f"VALUES ({placeholders}, ?, ?)",
-            [*clean.values(), now, now],
+            f"INSERT INTO media "
+            f"(owner_id, {columns}, created_at, updated_at) "
+            f"VALUES (?, {placeholders}, ?, ?)",
+            [user_id, *clean.values(), now, now],
         )
         media_id = cursor.lastrowid
         stored_action = "created"
@@ -3243,14 +3702,26 @@ def get_provider_settings():
 
 @app.get("/api/source-status")
 def get_source_status():
+    user_id = active_user_id()
     rows = {
         row["source_name"]: dict(row)
         for row in db().execute("SELECT * FROM source_status").fetchall()
     }
-    configurations = source_health_configuration()
+    jellyfin_row = db().execute(
+        "SELECT source_name, status, last_checked, last_error "
+        "FROM user_source_status "
+        "WHERE user_id = ? AND source_name = 'Jellyfin'",
+        (user_id,),
+    ).fetchone()
+    if jellyfin_row:
+        rows["Jellyfin"] = dict(jellyfin_row)
+    else:
+        rows.pop("Jellyfin", None)
+    configurations = source_health_configuration(user_id)
     statuses = []
     for name in SOURCE_NAMES:
-        statuses.append(rows.get(name) or {
+        statuses.append(
+            (rows.get(name) if configurations[name] else None) or {
             "source_name": name,
             "status": "Checking" if configurations[name] else "Not Configured",
             "last_checked": None,
@@ -3261,11 +3732,13 @@ def get_source_status():
 
 @app.post("/api/source-status/refresh")
 def refresh_source_status():
-    return jsonify(run_source_health_checks())
+    return jsonify(run_source_health_checks(active_user_id()))
 
 
 @app.post("/api/settings/providers")
 def save_provider_settings():
+    if not require_admin():
+        return jsonify({"error": "Administrator access required."}), 403
     payload = request.get_json(silent=True) or {}
     current = provider_settings()
     values = {
@@ -3293,6 +3766,8 @@ def save_provider_settings():
 
 @app.post("/api/metadata/omdb/test")
 def test_omdb_connection():
+    if not require_admin():
+        return jsonify({"error": "Administrator access required."}), 403
     try:
         data = omdb_request({"i": "tt0133093", "type": "movie", "plot": "short"})
         return jsonify({"connected": data.get("Response") != "False", "provider": "OMDb"})
@@ -3302,6 +3777,8 @@ def test_omdb_connection():
 
 @app.post("/api/metadata/tmdb/test")
 def test_tmdb_connection():
+    if not require_admin():
+        return jsonify({"error": "Administrator access required."}), 403
     try:
         data = tmdb_request("/configuration")
         return jsonify({"connected": bool(data.get("images"))})
@@ -3493,7 +3970,8 @@ def search_lastfm_albums():
 @app.post("/api/media/<int:item_id>/metadata")
 def attach_media_metadata(item_id: int):
     media = db().execute(
-        "SELECT media_type FROM media WHERE id = ?", (item_id,)
+        "SELECT media_type FROM media WHERE id = ? AND owner_id = ?",
+        (item_id, active_user_id()),
     ).fetchone()
     if media is None:
         return jsonify({"error": "Item not found."}), 404
@@ -3546,7 +4024,9 @@ def attach_media_metadata(item_id: int):
 @app.delete("/api/media/<int:item_id>/metadata")
 def remove_media_metadata(item_id: int):
     cursor = db().execute(
-        "DELETE FROM metadata_attachments WHERE media_id = ?", (item_id,)
+        "DELETE FROM metadata_attachments WHERE media_id = ? "
+        "AND EXISTS (SELECT 1 FROM media WHERE id = ? AND owner_id = ?)",
+        (item_id, item_id, active_user_id()),
     )
     db().commit()
     if cursor.rowcount == 0:
@@ -3556,6 +4036,7 @@ def remove_media_metadata(item_id: int):
 
 @app.post("/api/settings/jellyfin")
 def save_jellyfin_settings():
+    user_id = active_user_id()
     payload = request.get_json(silent=True) or {}
     current = jellyfin_settings()
     try:
@@ -3572,9 +4053,9 @@ def save_jellyfin_settings():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     db().executemany(
-        "INSERT INTO app_settings(key, value) VALUES(?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        values.items(),
+        "INSERT INTO user_settings(user_id, key, value) VALUES(?, ?, ?) "
+        "ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value",
+        [(user_id, key, value) for key, value in values.items()],
     )
     db().commit()
     return jsonify({"saved": True})
@@ -3597,6 +4078,7 @@ def test_jellyfin():
 
 @app.get("/api/jellyfin/libraries")
 def get_jellyfin_libraries():
+    user_id = active_user_id()
     settings = jellyfin_settings()
     if not settings["server_url"]:
         return jsonify({
@@ -3605,8 +4087,9 @@ def get_jellyfin_libraries():
             "last_result": last_sync_summary(),
         })
     rows = db().execute(
-        "SELECT * FROM jellyfin_libraries WHERE server_url = ? ORDER BY name",
-        (normalize_server_url(settings["server_url"]),),
+        "SELECT * FROM jellyfin_libraries "
+        "WHERE user_id = ? AND server_url = ? ORDER BY name",
+        (user_id, normalize_server_url(settings["server_url"])),
     ).fetchall()
     last_sync = max(
         (row["last_sync"] for row in rows if row["last_sync"]),
@@ -3623,14 +4106,19 @@ def get_jellyfin_libraries():
 
 @app.post("/api/jellyfin/libraries/refresh")
 def refresh_jellyfin_libraries():
+    user_id = active_user_id()
     try:
-        libraries = discover_jellyfin_libraries()
-        sync_result = sync_jellyfin_libraries() if auto_sync_enabled() else None
+        libraries = discover_jellyfin_libraries(user_id)
+        sync_result = (
+            sync_jellyfin_libraries(user_id)
+            if auto_sync_enabled(user_id) else None
+        )
         if sync_result:
             server_url = normalize_server_url(jellyfin_settings()["server_url"])
             rows = db().execute(
-                "SELECT * FROM jellyfin_libraries WHERE server_url = ? ORDER BY name",
-                (server_url,),
+                "SELECT * FROM jellyfin_libraries "
+                "WHERE user_id = ? AND server_url = ? ORDER BY name",
+                (user_id, server_url),
             ).fetchall()
             libraries = [library_to_dict(row) for row in rows]
         return jsonify({
@@ -3644,6 +4132,7 @@ def refresh_jellyfin_libraries():
 
 @app.put("/api/jellyfin/libraries")
 def update_jellyfin_libraries():
+    user_id = active_user_id()
     payload = request.get_json(silent=True) or {}
     settings = jellyfin_settings()
     try:
@@ -3660,17 +4149,18 @@ def update_jellyfin_libraries():
             """
             UPDATE jellyfin_libraries
             SET enabled = ?, media_category = ?
-            WHERE server_url = ? AND library_id = ?
+            WHERE user_id = ? AND server_url = ? AND library_id = ?
             """,
             (
                 1 if item.get("enabled") and category else 0,
-                category, server_url, library_id,
+                category, user_id, server_url, library_id,
             ),
         )
     db().execute(
-        "INSERT INTO app_settings(key, value) VALUES('jellyfin_auto_sync', ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        ("1" if payload.get("auto_sync") else "0",),
+        "INSERT INTO user_settings(user_id, key, value) "
+        "VALUES(?, 'jellyfin_auto_sync', ?) "
+        "ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value",
+        (user_id, "1" if payload.get("auto_sync") else "0"),
     )
     frequency = str(payload.get("frequency", "manual"))
     if frequency not in (
@@ -3678,10 +4168,10 @@ def update_jellyfin_libraries():
     ):
         frequency = "manual"
     db().execute(
-        "INSERT INTO app_settings(key, value) "
-        "VALUES('jellyfin_auto_sync_frequency', ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (frequency,),
+        "INSERT INTO user_settings(user_id, key, value) "
+        "VALUES(?, 'jellyfin_auto_sync_frequency', ?) "
+        "ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value",
+        (user_id, frequency),
     )
     db().commit()
     return jsonify({"saved": True})
@@ -3712,15 +4202,22 @@ def full_refresh_jellyfin():
 
 @app.post("/api/sources/jellyfin/disable")
 def disable_jellyfin_source():
-    db().execute("UPDATE jellyfin_libraries SET enabled = 0")
+    user_id = active_user_id()
     db().execute(
-        "INSERT INTO app_settings(key, value) VALUES('jellyfin_auto_sync', '0') "
-        "ON CONFLICT(key) DO UPDATE SET value = '0'"
+        "UPDATE jellyfin_libraries SET enabled = 0 WHERE user_id = ?",
+        (user_id,),
     )
     db().execute(
-        "INSERT INTO app_settings(key, value) "
-        "VALUES('jellyfin_source_disabled', '1') "
-        "ON CONFLICT(key) DO UPDATE SET value = '1'"
+        "INSERT INTO user_settings(user_id, key, value) "
+        "VALUES(?, 'jellyfin_auto_sync', '0') "
+        "ON CONFLICT(user_id, key) DO UPDATE SET value = '0'",
+        (user_id,),
+    )
+    db().execute(
+        "INSERT INTO user_settings(user_id, key, value) "
+        "VALUES(?, 'jellyfin_source_disabled', '1') "
+        "ON CONFLICT(user_id, key) DO UPDATE SET value = '1'",
+        (user_id,),
     )
     db().commit()
     return jsonify({"disabled": True})
@@ -3728,15 +4225,17 @@ def disable_jellyfin_source():
 
 @app.post("/api/sources/jellyfin/enable")
 def enable_jellyfin_source():
+    user_id = active_user_id()
     settings = jellyfin_settings()
     if not settings["server_url"] or not settings["api_key"]:
         return jsonify({
             "error": "Jellyfin is not configured yet. Source setup is coming next."
         }), 400
     db().execute(
-        "INSERT INTO app_settings(key, value) "
-        "VALUES('jellyfin_source_disabled', '0') "
-        "ON CONFLICT(key) DO UPDATE SET value = '0'"
+        "INSERT INTO user_settings(user_id, key, value) "
+        "VALUES(?, 'jellyfin_source_disabled', '0') "
+        "ON CONFLICT(user_id, key) DO UPDATE SET value = '0'",
+        (user_id,),
     )
     db().commit()
     return jsonify({"enabled": True})
@@ -3744,25 +4243,34 @@ def enable_jellyfin_source():
 
 @app.delete("/api/sources/<source_type>/<source_id>")
 def delete_source_instance(source_type: str, source_id: str):
+    user_id = active_user_id()
     if source_type == "jellyfin" and source_id == "default":
-        db().execute("DELETE FROM jellyfin_sources")
-        db().execute("DELETE FROM jellyfin_libraries")
         db().execute(
-            "DELETE FROM app_settings WHERE key IN ("
+            "DELETE FROM jellyfin_sources WHERE user_id = ?", (user_id,)
+        )
+        db().execute(
+            "DELETE FROM jellyfin_libraries WHERE user_id = ?", (user_id,)
+        )
+        db().execute(
+            "DELETE FROM user_settings WHERE user_id = ? AND key IN ("
             "'jellyfin_server_url', 'jellyfin_api_key', 'jellyfin_server_name', "
             "'jellyfin_use_metadata', "
             "'jellyfin_auto_sync', 'jellyfin_auto_sync_frequency', "
-            "'jellyfin_last_sync_summary', 'jellyfin_source_disabled')"
+            "'jellyfin_last_sync_summary', 'jellyfin_source_disabled')",
+            (user_id,),
         )
         db().execute(
-            "DELETE FROM source_status WHERE source_name = 'Jellyfin'"
+            "DELETE FROM user_source_status "
+            "WHERE user_id = ? AND source_name = 'Jellyfin'",
+            (user_id,),
         )
         db().commit()
         return jsonify({"deleted": True})
     if source_type == "json_import" and source_id.isdigit():
         import_id = int(source_id)
         if not db().execute(
-            "SELECT 1 FROM catalog_imports WHERE id = ?", (import_id,)
+            "SELECT 1 FROM catalog_imports WHERE id = ? AND user_id = ?",
+            (import_id, user_id),
         ).fetchone():
             return jsonify({"error": "Source instance not found."}), 404
         db().execute(
@@ -3772,7 +4280,10 @@ def delete_source_instance(source_type: str, source_id: str):
             "UPDATE import_previews SET import_id = NULL WHERE import_id = ?",
             (import_id,),
         )
-        db().execute("DELETE FROM catalog_imports WHERE id = ?", (import_id,))
+        db().execute(
+            "DELETE FROM catalog_imports WHERE id = ? AND user_id = ?",
+            (import_id, user_id),
+        )
         db().commit()
         return jsonify({"deleted": True})
     return jsonify({"error": "Source instance not found."}), 404
@@ -3780,6 +4291,7 @@ def delete_source_instance(source_type: str, source_id: str):
 
 @app.post("/api/jellyfin/import-preview")
 def jellyfin_import_preview():
+    user_id = active_user_id()
     settings = jellyfin_settings()
     try:
         connection = jellyfin_connection(settings)
@@ -3802,7 +4314,8 @@ def jellyfin_import_preview():
                 },
             )
             comparison = compare_jellyfin_movies(
-                response.get("Items", []), library, normalize_server_url(settings["server_url"])
+                response.get("Items", []), library,
+                normalize_server_url(settings["server_url"]), user_id,
             )
             for category in combined:
                 combined[category].extend(comparison[category])
@@ -3817,6 +4330,7 @@ def jellyfin_import_preview():
 
 @app.post("/api/jellyfin/import-action")
 def jellyfin_import_action():
+    user_id = active_user_id()
     payload = request.get_json(silent=True) or {}
     action = str(payload.get("action", ""))
     if action not in ("attach", "create", "ignore"):
@@ -3837,7 +4351,8 @@ def jellyfin_import_action():
     now = datetime.now(timezone.utc).isoformat()
     if action == "attach":
         if not media_id or db().execute(
-            "SELECT 1 FROM media WHERE id = ?", (media_id,)
+            "SELECT 1 FROM media WHERE id = ? AND owner_id = ?",
+            (media_id, user_id),
         ).fetchone() is None:
             return jsonify({"error": "Choose a valid MediaVault item."}), 400
         stored_action = "attached"
@@ -3855,9 +4370,10 @@ def jellyfin_import_action():
         columns = ", ".join(clean.keys())
         placeholders = ", ".join("?" for _ in clean)
         cursor = db().execute(
-            f"INSERT INTO media ({columns}, created_at, updated_at) "
-            f"VALUES ({placeholders}, ?, ?)",
-            [*clean.values(), now, now],
+            f"INSERT INTO media "
+            f"(owner_id, {columns}, created_at, updated_at) "
+            f"VALUES (?, {placeholders}, ?, ?)",
+            [user_id, *clean.values(), now, now],
         )
         media_id = cursor.lastrowid
         stored_action = "created"
@@ -3866,14 +4382,16 @@ def jellyfin_import_action():
         db().execute(
             """
             INSERT INTO jellyfin_sources (
-                jellyfin_item_id, jellyfin_library_id, jellyfin_library_name,
+                user_id, jellyfin_item_id, jellyfin_library_id,
+                jellyfin_library_name,
                 server_url, media_id, source_title, source_year, action,
                 metadata_json, source_updated_at,
                 source_metadata_updated_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                source_id, item.get("library_id"), item.get("library_name"),
+                user_id, source_id, item.get("library_id"),
+                item.get("library_name"),
                 server_url, media_id, title, item.get("year"), stored_action,
                 json.dumps(item, separators=(",", ":")),
                 item.get("source_updated_at"),
@@ -3895,15 +4413,15 @@ def jellyfin_import_action():
 
 
 _auto_sync_lock = threading.Lock()
-_startup_sync_scheduled = False
+_startup_sync_scheduled_users: set[int] = set()
 
 
-def run_scheduled_sync() -> None:
+def run_scheduled_sync(user_id: int) -> None:
     if not _auto_sync_lock.acquire(blocking=False):
         return
     try:
         with app.app_context():
-            sync_jellyfin_libraries()
+            sync_jellyfin_libraries(user_id)
     except Exception:
         app.logger.exception("Scheduled Jellyfin sync failed")
     finally:
@@ -3912,13 +4430,16 @@ def run_scheduled_sync() -> None:
 
 @app.before_request
 def schedule_auto_sync_if_due():
-    global _startup_sync_scheduled
-    if request.path.startswith("/static/") or not auto_sync_enabled():
+    user = current_user()
+    if request.path.startswith("/static/") or not user:
         return None
-    frequency = auto_sync_frequency()
+    user_id = int(user["id"])
+    if not auto_sync_enabled(user_id):
+        return None
+    frequency = auto_sync_frequency(user_id)
     if frequency == "manual":
         return None
-    summary = last_sync_summary()
+    summary = last_sync_summary(user_id)
     last_sync = None
     if summary and summary.get("last_sync"):
         try:
@@ -3932,14 +4453,16 @@ def schedule_auto_sync_if_due():
     }
     due = False
     if frequency == "startup":
-        due = not _startup_sync_scheduled
-        _startup_sync_scheduled = True
+        due = user_id not in _startup_sync_scheduled_users
+        _startup_sync_scheduled_users.add(user_id)
     elif not last_sync:
         due = True
     else:
         due = (now - last_sync).total_seconds() >= intervals.get(frequency, 86400)
     if due and not _auto_sync_lock.locked():
-        threading.Thread(target=run_scheduled_sync, daemon=True).start()
+        threading.Thread(
+            target=run_scheduled_sync, args=(user_id,), daemon=True
+        ).start()
     return None
 
 

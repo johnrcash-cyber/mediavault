@@ -68,9 +68,10 @@ Authentication configuration:
 - `MEDIAVAULT_REGISTRATION_MODE` defaults to `admin_only` and reserves a clean
   configuration seam for future registration modes.
 
-Authentication establishes platform access only. Catalog media, Wishlist items,
-collections, and sources remain shared exactly as before; user ownership is a
-later migration.
+Catalog media, Wishlist items, collections, imports, and connected sources are
+scoped to the signed-in user. Existing records are assigned to the first
+administrator during migration. Metadata-provider credentials remain global
+platform settings and can only be changed by an administrator.
 
 ## Reverse proxy deployment
 
