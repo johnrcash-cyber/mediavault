@@ -4,7 +4,7 @@ const savedDisplayView = localStorage.getItem("mediavault_display_view");
 const sortableKeys = ["title", "year", "media_type", "runtime", "format", "status", "provider", "rating", "enrichment"];
 const savedSortKey = localStorage.getItem("mediavault_sort_key");
 const savedSortDirection = localStorage.getItem("mediavault_sort_direction");
-const state = { query: "", type: "", status: "", origin: "", view: "dashboard", displayView: ["poster", "list"].includes(savedDisplayView) ? savedDisplayView : "poster", sortKey: sortableKeys.includes(savedSortKey) ? savedSortKey : "", sortDirection: ["asc", "desc"].includes(savedSortDirection) ? savedSortDirection : "asc", items: [], wishlistItems: [], wishlistTag: "", wishlistDetailItem: null, returnToWishlistDetail: false, jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviderPriority: "musicbrainz,discogs,coverartarchive,lastfm", musicProviders: ["musicbrainz"], settingsTab: "metadata", catalogPreview: null, catalogCategory: "new_items" };
+const state = { query: "", type: "", status: "", origin: "", view: "dashboard", displayView: ["poster", "list"].includes(savedDisplayView) ? savedDisplayView : "poster", sortKey: sortableKeys.includes(savedSortKey) ? savedSortKey : "", sortDirection: ["asc", "desc"].includes(savedSortDirection) ? savedSortDirection : "asc", items: [], wishlistItems: [], wishlistDetailItem: null, returnToWishlistDetail: false, jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviderPriority: "musicbrainz,discogs,coverartarchive,lastfm", musicProviders: ["musicbrainz"], settingsTab: "metadata", catalogPreview: null, catalogCategory: "new_items" };
 const typeIcons = { Movies: "▶", Television: "TV", Music: "♫", Games: "✦", Books: "B", Other: "MV" };
 
 async function api(url, options = {}) {
@@ -48,7 +48,7 @@ function card(item, options = {}) {
       <p class="card-details">${escapeHtml(detailBits)}</p>
       ${summary ? `<p class="card-summary">${escapeHtml(summary)}</p>` : `<p class="card-summary empty">${enrichmentStatus === "Pending" ? "Metadata pending…" : enrichmentStatus === "Failed" ? "Metadata enrichment failed." : "Metadata not found."}</p>`}
       ${sourceBadges ? `<div class="card-sources">${sourceBadges}</div>` : ""}
-      ${isWishlist ? `<div class="card-meta wishlist-card-meta"><span class="wishlist-not-owned">♡ ${escapeHtml(item.status || "Wanted")}</span><span>${escapeHtml(enrichmentStatus)}</span></div>` : ""}
+      ${isWishlist ? `<div class="card-meta wishlist-card-meta"><span class="wishlist-not-owned">♡ Not owned</span><span>${escapeHtml(enrichmentStatus)}</span></div>` : ""}
       <div class="catalog-card-meta card-meta"><span class="status-pill ${statusClass}">${escapeHtml(item.status)}</span><span class="rating">${item.rating ? `★ ${Number(item.rating).toFixed(1)}` : escapeHtml(item.physical_location || item.condition || "")}</span></div>
     </div></article>`;
 }
@@ -65,7 +65,7 @@ function compactListItem(item, options = {}) {
     item.year || "Year unknown", item.media_type, item.artist || "",
     item.runtime_minutes ? `${item.runtime_minutes} min` : "",
   ].filter(Boolean).join(" · ");
-  const status = isWishlist ? `♡ ${item.status || "Wanted"}` : (item.status || "Unassigned");
+  const status = isWishlist ? "♡ Not owned" : (item.status || "Unassigned");
   const provider = item.metadata_provider || "";
   const enrichment = item.enrichment_status || item.metadata_status || "";
   return `<article class="compact-media-row media-item-entry${isWishlist ? " wishlist-item-entry" : ""}" ${isWishlist ? `data-wishlist-id="${item.id}"` : `data-id="${item.id}"`}>
@@ -95,7 +95,7 @@ function compactSortableListItem(item, options = {}) {
   const provider = item.metadata_provider || "";
   const enrichment = item.enrichment_status || item.metadata_status || "";
   const status = isWishlist
-    ? (item.status || "Wanted")
+    ? `${item.status || "Open"} · Not owned`
     : (item.status || "Unassigned");
   return `<article class="compact-media-row sortable-row media-item-entry${isWishlist ? " wishlist-item-entry wishlist-sortable-row" : ""}" ${isWishlist ? `data-wishlist-id="${item.id}"` : `data-id="${item.id}"`}>
     <div class="compact-media-poster type-${escapeHtml(item.media_type)}">${item.poster_url ? `<img src="${escapeHtml(item.poster_url)}" alt="" loading="lazy">` : `<span>${typeIcons[item.media_type] || "MV"}</span>`}</div>
@@ -136,7 +136,7 @@ function sortValue(item, key, isWishlist) {
   if (key === "runtime") return item.runtime_minutes;
   if (key === "provider") return item.metadata_provider;
   if (key === "enrichment") return item.enrichment_status || item.metadata_status;
-  if (key === "status" && isWishlist) return item.status || "Wanted";
+  if (key === "status" && isWishlist) return item.status || "Open";
   return item[key];
 }
 
@@ -188,45 +188,16 @@ function renderCollectionItems() {
     : emptyState(Boolean(state.query || state.type || state.status));
 }
 
-function wishlistTags(item) {
-  const tags = [
-    ...(Array.isArray(item.genres) ? item.genres : []),
-    item.media_type,
-    item.year ? String(item.year) : "",
-    item.year ? `${Math.floor(Number(item.year) / 10) * 10}s` : "",
-    item.provider,
-    item.artist,
-  ].filter(Boolean).map((tag) => String(tag).trim());
-  return [...new Set(tags)];
-}
-
-function metadataTagPills(tags, scope = "wishlist") {
-  return tags.map((tag) =>
-    `<button type="button" class="metadata-tag" data-${scope}-tag="${encodeURIComponent(tag)}">${escapeHtml(tag)}</button>`
-  ).join("");
-}
-
 function renderWishlistItems() {
   const container = $("#wishlistGrid");
   container.classList.toggle("compact-list", state.displayView === "list");
-  const filteredItems = state.wishlistTag
-    ? state.wishlistItems.filter((item) => wishlistTags(item).some(
-      (tag) => tag.toLocaleLowerCase() === state.wishlistTag.toLocaleLowerCase()
-    ))
-    : state.wishlistItems;
-  const mappedItems = filteredItems.map(wishlistCardData);
-  $("#wishlistCount").textContent = state.wishlistTag
-    ? `${filteredItems.length} matching “${state.wishlistTag}”`
-    : `${state.wishlistItems.length} ${state.wishlistItems.length === 1 ? "item" : "items"}`;
-  const filterBanner = state.wishlistTag
-    ? `<div class="wishlist-filter-banner"><span>Filtered by <strong>${escapeHtml(state.wishlistTag)}</strong></span><button type="button" class="text-button" data-clear-wishlist-tag>Clear filter</button></div>`
-    : "";
-  container.innerHTML = filteredItems.length
+  const mappedItems = state.wishlistItems.map(wishlistCardData);
+  container.innerHTML = state.wishlistItems.length
     ? (state.displayView === "list"
-      ? filterBanner + compactListHeader(true) + sortedListItems(mappedItems, true).map((item) =>
+      ? compactListHeader(true) + sortedListItems(mappedItems, true).map((item) =>
         compactSortableListItem(item, { wishlist: true })).join("")
-      : filterBanner + mappedItems.map((item) => card(item, { wishlist: true })).join(""))
-    : filterBanner + `<div class="empty-state"><strong>${state.wishlistTag ? "No Wishlist items match this tag." : "Your Wishlist is empty."}</strong><span>${state.wishlistTag ? "Clear the tag filter to see everything." : "Add a title you want to remember."}</span><br>${state.wishlistTag ? '<button class="button secondary" data-clear-wishlist-tag>Clear filter</button>' : '<button class="button primary" data-add-wishlist>＋ Add Wishlist Item</button>'}</div>`;
+      : mappedItems.map((item) => card(item, { wishlist: true })).join(""))
+    : `<div class="empty-state"><strong>Your Wishlist is empty.</strong><span>Add a title you want to remember.</span><br><button class="button primary" data-add-wishlist>＋ Add Wishlist Item</button></div>`;
 }
 
 function setDisplayView(view) {
@@ -998,7 +969,6 @@ function openWishlistDetail(item) {
       ? "Metadata enrichment is pending."
       : "No metadata summary is available.");
   $("#wishlistDetailProvider").textContent = item.provider || "Manual / none";
-  const status = item.wishlist_status || item.status || "Wanted";
   $("#wishlistDetailMetadata").innerHTML = [
     fact("Artist", item.artist),
     fact("Year", item.year),
@@ -1006,19 +976,11 @@ function openWishlistDetail(item) {
     fact("Runtime", item.runtime_minutes ? `${item.runtime_minutes} min` : ""),
     fact("Genres", item.genres),
     fact("Enrichment", item.enrichment_status || item.metadata_status),
-    fact("Wishlist status", status),
-    fact("Wishlist added", item.created_at ? new Date(item.created_at).toLocaleString() : ""),
+    fact("Wishlist status", `${item.status || "Open"} / Not owned`),
     fact("Last enriched", item.enriched_at ? new Date(item.enriched_at).toLocaleString() : ""),
-    fact("Acquired date", item.acquired_at ? new Date(item.acquired_at).toLocaleString() : ""),
-    fact("Dismissed date", item.dismissed_at ? new Date(item.dismissed_at).toLocaleString() : ""),
   ].join("");
   $("#wishlistDetailChips").innerHTML =
-    `<span class="source-chip wishlist-source">♡ Wishlist · ${escapeHtml(status)}</span>`;
-  const tags = wishlistTags(item);
-  $("#wishlistDetailTags").hidden = !tags.length;
-  $("#wishlistDetailTags .metadata-tag-list").innerHTML = metadataTagPills(tags);
-  $("#markWishlistAcquired").disabled = status === "Acquired";
-  $("#markWishlistDismissed").disabled = status === "Dismissed";
+    '<span class="source-chip wishlist-source">♡ Wishlist · Not owned</span>';
   $("#wishlistDetailPoster").style.backgroundImage = item.poster_url
     ? `url("${item.poster_url}")` : "";
   $("#wishlistDetailPoster").classList.toggle("has-image", Boolean(item.poster_url));
@@ -1026,22 +988,6 @@ function openWishlistDetail(item) {
   $("#wishlistDetailNotes p").textContent = item.notes || "";
   $("#wishlistDetail").hidden = false;
   document.body.style.overflow = "hidden";
-}
-
-async function setWishlistStatus(status) {
-  const item = state.wishlistDetailItem;
-  if (!item) return;
-  const updated = await api(`/api/wishlist/${item.id}/status`, {
-    method: "PATCH",
-    body: JSON.stringify({ wishlist_status: status }),
-  });
-  state.wishlistDetailItem = updated;
-  const index = state.wishlistItems.findIndex((candidate) => candidate.id === updated.id);
-  if (index >= 0) state.wishlistItems[index] = updated;
-  openWishlistDetail(updated);
-  renderWishlistItems();
-  await loadDashboard();
-  toast(`Wishlist item marked ${updated.status.toLowerCase()}.`);
 }
 
 function closeWishlistDetail() {
@@ -1076,18 +1022,6 @@ function downloadCatalogExport() {
 }
 
 document.addEventListener("click", async (event) => {
-  const wishlistTag = event.target.closest("[data-wishlist-tag]");
-  if (wishlistTag) {
-    state.wishlistTag = decodeURIComponent(wishlistTag.dataset.wishlistTag);
-    closeWishlistDetail();
-    renderWishlistItems();
-    return;
-  }
-  if (event.target.closest("[data-clear-wishlist-tag]")) {
-    state.wishlistTag = "";
-    renderWishlistItems();
-    return;
-  }
   const sortButton = event.target.closest("[data-sort-key]");
   if (sortButton) {
     setSortKey(sortButton.dataset.sortKey);
@@ -1375,18 +1309,6 @@ $("#refreshWishlistMetadata").addEventListener("click", async () => {
 });
 $("#deleteWishlistDetail").addEventListener("click", async () => {
   try { await deleteWishlistItem(state.wishlistDetailItem); }
-  catch (error) { toast(error.message, 5000); }
-});
-$("#removeWishlistBottom").addEventListener("click", async () => {
-  try { await deleteWishlistItem(state.wishlistDetailItem); }
-  catch (error) { toast(error.message, 5000); }
-});
-$("#markWishlistAcquired").addEventListener("click", async () => {
-  try { await setWishlistStatus("Acquired"); }
-  catch (error) { toast(error.message, 5000); }
-});
-$("#markWishlistDismissed").addEventListener("click", async () => {
-  try { await setWishlistStatus("Dismissed"); }
   catch (error) { toast(error.message, 5000); }
 });
 syncDisplayViewControls();
