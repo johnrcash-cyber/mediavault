@@ -970,6 +970,8 @@ function openWishlistDetail(item) {
       ? "Metadata enrichment is pending."
       : "No metadata summary is available.");
   $("#wishlistDetailProvider").textContent = item.provider || "Manual / none";
+  const wishlistStatusLabel =
+    wishlistStatus[0].toUpperCase() + wishlistStatus.slice(1);
   $("#wishlistDetailMetadata").innerHTML = [
     fact("Artist", item.artist),
     fact("Year", item.year),
@@ -977,20 +979,20 @@ function openWishlistDetail(item) {
     fact("Runtime", item.runtime_minutes ? `${item.runtime_minutes} min` : ""),
     fact("Genres", item.genres),
     fact("Enrichment", item.enrichment_status || item.metadata_status),
-    fact("Wishlist status", wishlistStatus[0].toUpperCase() + wishlistStatus.slice(1)),
+    fact("Wishlist status", wishlistStatusLabel),
     fact("Acquired", item.acquired_at ? new Date(item.acquired_at).toLocaleString() : ""),
     fact("Dismissed", item.dismissed_at ? new Date(item.dismissed_at).toLocaleString() : ""),
     fact("Last enriched", item.enriched_at ? new Date(item.enriched_at).toLocaleString() : ""),
   ].join("");
   $("#wishlistDetailChips").innerHTML =
-    '<span class="source-chip wishlist-source">♡ Wishlist · Not owned</span>';
+    `<span class="source-chip wishlist-source ${wishlistStatus}">♡ Wishlist · ${escapeHtml(wishlistStatusLabel)}</span>`;
   $("#wishlistDetailPoster").style.backgroundImage = item.poster_url
     ? `url("${item.poster_url}")` : "";
   $("#wishlistDetailPoster").classList.toggle("has-image", Boolean(item.poster_url));
   $("#wishlistDetailNotes").hidden = !item.notes;
   $("#wishlistDetailNotes p").textContent = item.notes || "";
-  $("#markWishlistAcquired").disabled = wishlistStatus === "acquired";
-  $("#markWishlistDismissed").disabled = wishlistStatus === "dismissed";
+  $("#markWishlistAcquired").hidden = wishlistStatus !== "wanted";
+  $("#markWishlistDismissed").hidden = wishlistStatus !== "wanted";
   $("#restoreWishlistWanted").hidden = wishlistStatus === "wanted";
   $("#wishlistDetail").hidden = false;
   document.body.style.overflow = "hidden";
