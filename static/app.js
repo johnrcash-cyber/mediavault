@@ -22,8 +22,16 @@ function escapeHtml(value = "") {
   return div.innerHTML;
 }
 
+function wishlistStatusDisplay(item) {
+  const status = ["wanted", "acquired", "dismissed"].includes(item.wishlist_status)
+    ? item.wishlist_status
+    : "wanted";
+  return { status, label: status.charAt(0).toUpperCase() + status.slice(1) };
+}
+
 function card(item, options = {}) {
   const isWishlist = Boolean(options.wishlist);
+  const wishlistStatus = isWishlist ? wishlistStatusDisplay(item) : null;
   const statusClass = item.status === "Archived" ? "archived" : "";
   const providerClass = (item.metadata_provider || "").toLowerCase();
   const detailBits = [
@@ -48,7 +56,7 @@ function card(item, options = {}) {
       <p class="card-details">${escapeHtml(detailBits)}</p>
       ${summary ? `<p class="card-summary">${escapeHtml(summary)}</p>` : `<p class="card-summary empty">${enrichmentStatus === "Pending" ? "Metadata pending…" : enrichmentStatus === "Failed" ? "Metadata enrichment failed." : "Metadata not found."}</p>`}
       ${sourceBadges ? `<div class="card-sources">${sourceBadges}</div>` : ""}
-      ${isWishlist ? `<div class="card-meta wishlist-card-meta"><span class="wishlist-not-owned">♡ Not owned</span><span>${escapeHtml(enrichmentStatus)}</span></div>` : ""}
+      ${isWishlist ? `<div class="card-meta wishlist-card-meta"><span class="wishlist-card-status ${wishlistStatus.status}">♡ Wishlist · ${escapeHtml(wishlistStatus.label)}</span><span>${escapeHtml(enrichmentStatus)}</span></div>` : ""}
       <div class="catalog-card-meta card-meta"><span class="status-pill ${statusClass}">${escapeHtml(item.status)}</span><span class="rating">${item.rating ? `★ ${Number(item.rating).toFixed(1)}` : escapeHtml(item.physical_location || item.condition || "")}</span></div>
     </div></article>`;
 }
@@ -61,11 +69,12 @@ function emptyState(isFiltered = false) {
 
 function compactListItem(item, options = {}) {
   const isWishlist = Boolean(options.wishlist);
+  const wishlistStatus = isWishlist ? wishlistStatusDisplay(item) : null;
   const details = [
     item.year || "Year unknown", item.media_type, item.artist || "",
     item.runtime_minutes ? `${item.runtime_minutes} min` : "",
   ].filter(Boolean).join(" · ");
-  const status = isWishlist ? "♡ Not owned" : (item.status || "Unassigned");
+  const status = isWishlist ? `Wishlist · ${wishlistStatus.label}` : (item.status || "Unassigned");
   const provider = item.metadata_provider || "";
   const enrichment = item.enrichment_status || item.metadata_status || "";
   return `<article class="compact-media-row media-item-entry${isWishlist ? " wishlist-item-entry" : ""}" ${isWishlist ? `data-wishlist-id="${item.id}"` : `data-id="${item.id}"`}>
@@ -77,7 +86,7 @@ function compactListItem(item, options = {}) {
       ${item.format ? `<span class="compact-badge format">${escapeHtml(item.format)}</span>` : ""}
       ${provider ? `<span class="compact-badge provider">${escapeHtml(provider)}</span>` : ""}
     </div>
-    <div class="compact-media-status"><strong>${escapeHtml(status)}</strong>${isWishlist && enrichment ? `<small>${escapeHtml(enrichment)}</small>` : ""}</div>
+    <div class="compact-media-status${isWishlist ? ` wishlist-status-${wishlistStatus.status}` : ""}"><strong>${escapeHtml(status)}</strong>${isWishlist && enrichment ? `<small>${escapeHtml(enrichment)}</small>` : ""}</div>
     <div class="compact-media-rating">${item.rating ? `★ ${Number(item.rating).toFixed(1)}` : ""}</div>
   </article>`;
 }
@@ -92,10 +101,11 @@ function syncDisplayViewControls() {
 
 function compactSortableListItem(item, options = {}) {
   const isWishlist = Boolean(options.wishlist);
+  const wishlistStatus = isWishlist ? wishlistStatusDisplay(item) : null;
   const provider = item.metadata_provider || "";
   const enrichment = item.enrichment_status || item.metadata_status || "";
   const status = isWishlist
-    ? `${item.status || "Open"} · Not owned`
+    ? `Wishlist · ${wishlistStatus.label}`
     : (item.status || "Unassigned");
   return `<article class="compact-media-row sortable-row media-item-entry${isWishlist ? " wishlist-item-entry wishlist-sortable-row" : ""}" ${isWishlist ? `data-wishlist-id="${item.id}"` : `data-id="${item.id}"`}>
     <div class="compact-media-poster type-${escapeHtml(item.media_type)}">${item.poster_url ? `<img src="${escapeHtml(item.poster_url)}" alt="" loading="lazy">` : `<span>${typeIcons[item.media_type] || "MV"}</span>`}</div>
@@ -104,7 +114,7 @@ function compactSortableListItem(item, options = {}) {
     <div class="compact-list-value">${escapeHtml(item.media_type || "—")}</div>
     <div class="compact-list-value numeric">${item.runtime_minutes ? `${item.runtime_minutes} min` : "—"}</div>
     <div class="compact-list-value">${escapeHtml(item.format || "—")}</div>
-    <div class="compact-media-status"><strong>${escapeHtml(status)}</strong></div>
+    <div class="compact-media-status${isWishlist ? ` wishlist-status-${wishlistStatus.status}` : ""}"><strong>${escapeHtml(status)}</strong></div>
     <div class="compact-list-value provider-value">${escapeHtml(provider || "—")}</div>
     <div class="compact-media-rating">${item.rating !== null && item.rating !== undefined && item.rating !== "" ? `★ ${Number(item.rating).toFixed(1)}` : "—"}</div>
     ${isWishlist ? `<div class="compact-list-value enrichment-value">${escapeHtml(enrichment || "—")}</div>` : ""}
@@ -136,7 +146,7 @@ function sortValue(item, key, isWishlist) {
   if (key === "runtime") return item.runtime_minutes;
   if (key === "provider") return item.metadata_provider;
   if (key === "enrichment") return item.enrichment_status || item.metadata_status;
-  if (key === "status" && isWishlist) return item.status || "Open";
+  if (key === "status" && isWishlist) return wishlistStatusDisplay(item).status;
   return item[key];
 }
 
