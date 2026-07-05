@@ -1199,28 +1199,6 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                     else:
                         result["skipped"] += 1
                         library_result["skipped"] += 1
-                    media_id = existing_source["media_id"]
-                    if media_id and category in ("Movies", "Television", "Music"):
-                        attachment = db().execute(
-                            "SELECT metadata_json FROM metadata_attachments "
-                            "WHERE media_id = ?",
-                            (media_id,),
-                        ).fetchone()
-                        needs_metadata = not attachment
-                        if attachment:
-                            try:
-                                needs_metadata = not json.loads(
-                                    attachment["metadata_json"] or "{}"
-                                ).get("poster_url")
-                            except json.JSONDecodeError:
-                                needs_metadata = True
-                        if needs_metadata or (
-                            changed and settings.get("use_metadata", True)
-                        ):
-                            try:
-                                enrich_media_item(media_id, user_id)
-                            except (ValueError, LookupError, sqlite3.Error):
-                                pass
                     continue
                 candidates = db().execute(
                     "SELECT id, title, year FROM media "
@@ -1285,11 +1263,6 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                         source.get("source_metadata_updated_at"), now,
                     ),
                 )
-                if category in ("Movies", "Television", "Music"):
-                    try:
-                        enrich_media_item(media_id, user_id)
-                    except (ValueError, LookupError, sqlite3.Error):
-                        pass
             total = db().execute(
                 "SELECT COUNT(*) FROM jellyfin_sources "
                 "WHERE user_id = ? AND server_url = ? "
@@ -1628,12 +1601,15 @@ def normalize_musicbrainz_release(raw: dict) -> dict:
             })
     label_info = raw.get("label-info") or []
     labels = [
-        info.get("label", {}).get("name")
-        for info in label_info if info.get("label", {}).get("name")
+        (info.get("label") or {}).get("name")
+        for info in label_info
+        if isinstance(info, dict)
+        and isinstance(info.get("label"), dict)
+        and (info.get("label") or {}).get("name")
     ]
     catalog_numbers = [
         info.get("catalog-number") for info in label_info
-        if info.get("catalog-number")
+        if isinstance(info, dict) and info.get("catalog-number")
     ]
     release_group = raw.get("release-group") or {}
     genres = [
