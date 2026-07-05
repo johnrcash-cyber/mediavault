@@ -1533,7 +1533,9 @@ def run_source_health_checks(user_id: int | None = None) -> list[dict]:
     return sorted(results, key=lambda item: SOURCE_NAMES.index(item["source_name"]))
 
 
-def public_json_request(url: str, provider: str) -> dict:
+def public_json_request(
+    url: str, provider: str, timeout: float = 12
+) -> dict:
     req = urllib.request.Request(
         url,
         headers={
@@ -1542,7 +1544,7 @@ def public_json_request(url: str, provider: str) -> dict:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=12) as response:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
@@ -1565,17 +1567,48 @@ def musicbrainz_request(path: str, query: dict | None = None) -> dict:
     return public_json_request(url, "MusicBrainz")
 
 
-def cover_art_for_release(release_id: str) -> str:
-    data = public_json_request(
-        f"https://coverartarchive.org/release/{urllib.parse.quote(release_id)}",
-        "Cover Art Archive",
-    )
-    images = data.get("images") or []
-    front = next((image for image in images if image.get("front")), None)
-    if not front:
-        return ""
-    thumbnails = front.get("thumbnails") or {}
-    return thumbnails.get("500") or thumbnails.get("large") or front.get("image") or ""
+def cover_art_for_release(release_id: str) -> str | None:
+    if not release_id:
+        return None
+    try:
+        data = public_json_request(
+            f"https://coverartarchive.org/release/{urllib.parse.quote(release_id)}",
+            "Cover Art Archive",
+            timeout=5,
+        )
+        if not isinstance(data, dict):
+            return None
+        images = data.get("images") or []
+        if not isinstance(images, list):
+            return None
+        front = next(
+            (
+                image for image in images
+                if isinstance(image, dict) and image.get("front")
+            ),
+            None,
+        )
+        if not front:
+            return None
+        thumbnails = front.get("thumbnails") or {}
+        if not isinstance(thumbnails, dict):
+            thumbnails = {}
+        return (
+            thumbnails.get("500")
+            or thumbnails.get("large")
+            or front.get("image")
+            or None
+        )
+    except (Exception, SystemExit) as exc:
+        # Cover art is optional. In particular, Gunicorn can surface its
+        # request-timeout interrupt as SystemExit while urllib is blocked in
+        # an SSL read; that must not take down an otherwise useful release.
+        app.logger.warning(
+            "Cover Art Archive lookup skipped release_id=%s error_type=%s "
+            "error=%s",
+            release_id, type(exc).__name__, exc,
+        )
+        return None
 
 
 def artist_credit_text(raw: dict) -> str:
@@ -2940,20 +2973,28 @@ def refresh_all_metadata():
                 "Metadata refresh skipped item_id=%s title=%r error=%s",
                 item["id"], item["title"], exc,
             )
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
             db().rollback()
             result["failed"] += 1
             category["failed"] += 1
+            provider = (
+                "MusicBrainz/Discogs/Cover Art Archive/Last.fm"
+                if item["media_type"] == "Music"
+                else "OMDb/TMDb"
+            )
             error = {
                 "id": item["id"], "title": item["title"],
                 "media_type": item["media_type"],
+                "provider": provider,
                 "status": "failed", "error": str(exc),
             }
             result["failures"].append(error)
             result["errors"].append(error)
-            app.logger.exception(
-                "Metadata refresh failed item_id=%s title=%r error=%s",
-                item["id"], item["title"], exc,
+            app.logger.error(
+                "Metadata refresh failed item_id=%s title=%r provider=%s "
+                "error_type=%s error=%s",
+                item["id"], item["title"], provider,
+                type(exc).__name__, exc, exc_info=True,
             )
     result["started_at"] = started_at
     result["completed_at"] = datetime.now(timezone.utc).isoformat()
