@@ -2642,9 +2642,66 @@ def forgot_password():
     return render_template("auth.html", mode="forgot", error="", values={})
 
 
-@app.get("/profile")
+@app.route("/profile", methods=["GET", "POST"])
 def profile():
-    return render_template("profile.html", user=current_user())
+    user = current_user()
+    display_name_error = ""
+    password_error = ""
+    success = ""
+
+    if request.method == "POST":
+        action = request.form.get("action", "")
+        if action == "display_name":
+            display_name = request.form.get("display_name", "").strip()
+            if not display_name:
+                display_name_error = "Display name is required."
+            elif len(display_name) > 100:
+                display_name_error = "Display name must be 100 characters or fewer."
+            else:
+                db().execute(
+                    "UPDATE users SET display_name = ? WHERE id = ?",
+                    (display_name, user["id"]),
+                )
+                db().commit()
+                return redirect(url_for("profile", updated="display_name"))
+        elif action == "password":
+            current_password = request.form.get("current_password", "")
+            new_password = request.form.get("new_password", "")
+            confirmation = request.form.get("confirm_password", "")
+            account = db().execute(
+                "SELECT password_hash FROM users WHERE id = ?",
+                (user["id"],),
+            ).fetchone()
+            if not current_password or not check_password_hash(
+                account["password_hash"], current_password
+            ):
+                password_error = "Current password is incorrect."
+            elif len(new_password) < 8:
+                password_error = "New password must be at least 8 characters."
+            elif new_password != confirmation:
+                password_error = "New password and confirmation do not match."
+            else:
+                db().execute(
+                    "UPDATE users SET password_hash = ? WHERE id = ?",
+                    (generate_password_hash(new_password), user["id"]),
+                )
+                db().commit()
+                return redirect(url_for("profile", updated="password"))
+        else:
+            password_error = "Choose a valid account action."
+
+    updated = request.args.get("updated")
+    if updated == "display_name":
+        success = "Display name updated."
+    elif updated == "password":
+        success = "Password changed successfully."
+    return render_template(
+        "profile.html",
+        user=current_user(),
+        success=success,
+        display_name_error=display_name_error,
+        password_error=password_error,
+    )
 
 
 @app.route("/administration", methods=["GET", "POST"])
