@@ -2659,41 +2659,69 @@ def administration_metadata_providers():
     return render_template("admin_metadata_providers.html", user=user)
 
 
-@app.post("/api/administration/users/<int:user_id>/reset-password")
-def administration_reset_password(user_id: int):
+@app.put("/api/administration/users/<int:user_id>")
+def administration_update_user(user_id: int):
     admin = require_admin()
     if not admin:
         return jsonify({"error": "Administrator access required."}), 403
     payload = request.get_json(silent=True) or {}
-    password = str(payload.get("new_password", ""))
-    confirmation = str(payload.get("confirm_password", ""))
-    if not password:
-        return jsonify({"error": "New password is required."}), 400
-    if len(password) < 8:
-        return jsonify({"error": "Password must be at least 8 characters."}), 400
-    if password != confirmation:
-        return jsonify({"error": "Passwords do not match."}), 400
+    display_name = str(payload.get("display_name", "")).strip()
+    email = str(payload.get("email", "")).strip().casefold()
+    role = str(payload.get("role", "user")).strip().casefold()
+    active = bool(payload.get("active", True))
+    password = str(payload.get("password", ""))
+    if not display_name or "@" not in email:
+        return jsonify({
+            "error": "Enter a display name and valid email address."
+        }), 400
+    if role not in ("admin", "user"):
+        return jsonify({"error": "Choose a valid role."}), 400
+    if password and len(password) < 8:
+        return jsonify({
+            "error": "Password must be at least 8 characters."
+        }), 400
+    if user_id == admin["id"] and not active:
+        return jsonify({
+            "error": "You cannot deactivate your current account."
+        }), 400
     account = db().execute(
-        "SELECT id, display_name, email FROM users WHERE id = ?",
+        "SELECT id FROM users WHERE id = ?",
         (user_id,),
     ).fetchone()
     if account is None:
         return jsonify({"error": "User not found."}), 404
-    db().execute(
-        "UPDATE users SET password_hash = ? WHERE id = ?",
-        (generate_password_hash(password), user_id),
-    )
-    db().commit()
+    assignments = [
+        "display_name = ?", "email = ?", "role = ?", "active = ?",
+    ]
+    values: list = [display_name, email, role, 1 if active else 0]
+    if password:
+        assignments.append("password_hash = ?")
+        values.append(generate_password_hash(password))
+    values.append(user_id)
+    try:
+        db().execute(
+            f"UPDATE users SET {', '.join(assignments)} WHERE id = ?",
+            values,
+        )
+        db().commit()
+    except sqlite3.IntegrityError:
+        db().rollback()
+        return jsonify({
+            "error": "That email address is already registered."
+        }), 409
     app.logger.info(
-        "Administrator user_id=%s reset password for user_id=%s",
+        "Administrator user_id=%s updated user_id=%s password_changed=%s",
         admin["id"], user_id,
+        bool(password),
     )
     return jsonify({
         "success": True,
         "user": {
-            "id": account["id"],
-            "display_name": account["display_name"],
-            "email": account["email"],
+            "id": user_id,
+            "display_name": display_name,
+            "email": email,
+            "role": role,
+            "active": active,
         },
     })
 
