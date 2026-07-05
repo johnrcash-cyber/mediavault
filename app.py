@@ -17,8 +17,8 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from flask import (
-    Flask, Response, g, jsonify, redirect, render_template, request, session,
-    url_for,
+    Flask, Response, g, jsonify, redirect, render_template, request,
+    send_from_directory, session, url_for,
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -26,6 +26,8 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE = Path(os.environ.get("MEDIAVAULT_DATABASE", BASE_DIR / "data" / "mediavault.db"))
+AVATAR_UPLOAD_DIR = BASE_DIR / "data" / "uploads" / "avatars"
+MAX_AVATAR_BYTES = 5 * 1024 * 1024
 PUBLIC_ORIGIN = os.environ.get(
     "MEDIAVAULT_PUBLIC_ORIGIN", "https://mediavault.gridandink.com"
 ).rstrip("/")
@@ -105,10 +107,22 @@ def init_db() -> None:
                 CHECK(role IN ('admin', 'user')),
             active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL,
-            last_login TEXT
+            last_login TEXT,
+            avatar_url TEXT
         )
         """
     )
+    user_columns = {
+        row[1] for row in connection.execute(
+            "PRAGMA table_info(users)"
+        ).fetchall()
+    }
+    if "avatar_url" not in user_columns:
+        try:
+            connection.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).casefold():
+                raise
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS media (
@@ -616,7 +630,8 @@ def current_user() -> sqlite3.Row | None:
     if not user_id:
         return None
     return db().execute(
-        "SELECT id, email, display_name, role, active, created_at, last_login "
+        "SELECT id, email, display_name, role, active, created_at, last_login, "
+        "avatar_url "
         "FROM users WHERE id = ?",
         (user_id,),
     ).fetchone()
@@ -2642,11 +2657,40 @@ def forgot_password():
     return render_template("auth.html", mode="forgot", error="", values={})
 
 
+def avatar_image_type(data: bytes) -> str | None:
+    if (
+        data.startswith(b"\x89PNG\r\n\x1a\n")
+        and data.endswith(b"\x00\x00\x00\x00IEND\xaeB`\x82")
+    ):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9"):
+        return "jpg"
+    if (
+        len(data) >= 12
+        and data[:4] == b"RIFF"
+        and data[8:12] == b"WEBP"
+        and int.from_bytes(data[4:8], "little") == len(data) - 8
+    ):
+        return "webp"
+    return None
+
+
+@app.get("/user-media/avatars/<filename>")
+def user_avatar_file(filename: str):
+    user = current_user()
+    if not user["avatar_url"] or Path(user["avatar_url"]).name != filename:
+        return Response(status=404)
+    return send_from_directory(
+        AVATAR_UPLOAD_DIR, filename, max_age=3600
+    )
+
+
 @app.route("/profile", methods=["GET", "POST"])
 def profile():
     user = current_user()
     display_name_error = ""
     password_error = ""
+    avatar_error = ""
     success = ""
 
     if request.method == "POST":
@@ -2687,6 +2731,38 @@ def profile():
                 )
                 db().commit()
                 return redirect(url_for("profile", updated="password"))
+        elif action == "avatar":
+            upload = request.files.get("avatar")
+            original_name = (upload.filename if upload else "").strip()
+            extension = (
+                Path(original_name).suffix.casefold().lstrip(".")
+                if original_name else ""
+            )
+            if extension not in {"png", "jpg", "jpeg", "webp"}:
+                avatar_error = "Choose a PNG, JPG, JPEG, or WebP image."
+            else:
+                data = upload.stream.read(MAX_AVATAR_BYTES + 1)
+                detected_type = avatar_image_type(data)
+                expected_type = "jpg" if extension in {"jpg", "jpeg"} else extension
+                if len(data) > MAX_AVATAR_BYTES:
+                    avatar_error = "Avatar images must be 5 MB or smaller."
+                elif not data or detected_type != expected_type:
+                    avatar_error = "The selected file is not a valid image."
+                else:
+                    AVATAR_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+                    filename = (
+                        f"user-{user['id']}-{uuid.uuid4().hex}.{detected_type}"
+                    )
+                    (AVATAR_UPLOAD_DIR / filename).write_bytes(data)
+                    avatar_url = url_for(
+                        "user_avatar_file", filename=filename
+                    )
+                    db().execute(
+                        "UPDATE users SET avatar_url = ? WHERE id = ?",
+                        (avatar_url, user["id"]),
+                    )
+                    db().commit()
+                    return redirect(url_for("profile", updated="avatar"))
         else:
             password_error = "Choose a valid account action."
 
@@ -2695,12 +2771,15 @@ def profile():
         success = "Display name updated."
     elif updated == "password":
         success = "Password changed successfully."
+    elif updated == "avatar":
+        success = "Avatar updated."
     return render_template(
         "profile.html",
         user=current_user(),
         success=success,
         display_name_error=display_name_error,
         password_error=password_error,
+        avatar_error=avatar_error,
     )
 
 
