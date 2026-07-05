@@ -2659,6 +2659,45 @@ def administration_metadata_providers():
     return render_template("admin_metadata_providers.html", user=user)
 
 
+@app.post("/api/administration/users/<int:user_id>/reset-password")
+def administration_reset_password(user_id: int):
+    admin = require_admin()
+    if not admin:
+        return jsonify({"error": "Administrator access required."}), 403
+    payload = request.get_json(silent=True) or {}
+    password = str(payload.get("new_password", ""))
+    confirmation = str(payload.get("confirm_password", ""))
+    if not password:
+        return jsonify({"error": "New password is required."}), 400
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters."}), 400
+    if password != confirmation:
+        return jsonify({"error": "Passwords do not match."}), 400
+    account = db().execute(
+        "SELECT id, display_name, email FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    if account is None:
+        return jsonify({"error": "User not found."}), 404
+    db().execute(
+        "UPDATE users SET password_hash = ? WHERE id = ?",
+        (generate_password_hash(password), user_id),
+    )
+    db().commit()
+    app.logger.info(
+        "Administrator user_id=%s reset password for user_id=%s",
+        admin["id"], user_id,
+    )
+    return jsonify({
+        "success": True,
+        "user": {
+            "id": account["id"],
+            "display_name": account["display_name"],
+            "email": account["email"],
+        },
+    })
+
+
 @app.before_request
 def require_authentication():
     public_endpoints = {

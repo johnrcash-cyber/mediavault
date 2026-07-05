@@ -26,6 +26,7 @@
               <span><strong>{{ account.display_name }}</strong><small>{{ account.email }}</small></span>
               <span class="role-pill {{ account.role }}">{{ account.role|title }}</span>
               <time>{{ account.created_at[:10] }}</time>
+              <button type="button" class="reset-password-trigger" data-user-id="{{ account.id }}" data-display-name="{{ account.display_name }}" data-email="{{ account.email }}">Reset Password</button>
             </div>
             {% endfor %}
           </div>
@@ -50,5 +51,26 @@
       </div>
     </section>
   </main>
+  <div class="modal-backdrop" id="resetPasswordModal" hidden>
+    <div class="modal password-reset-modal" role="dialog" aria-modal="true" aria-labelledby="resetPasswordTitle">
+      <div class="modal-head">
+        <div><p class="eyebrow">USER ACCESS</p><h2 id="resetPasswordTitle">Reset Password</h2></div>
+        <button type="button" class="icon-button" id="closeResetPassword" aria-label="Close">×</button>
+      </div>
+      <form id="resetPasswordForm" class="auth-form">
+        <input type="hidden" name="user_id">
+        <div class="reset-password-user"><strong id="resetPasswordName"></strong><small id="resetPasswordEmail"></small></div>
+        <label>New Password<input name="new_password" type="password" minlength="8" required autocomplete="new-password"></label>
+        <label>Confirm Password<input name="confirm_password" type="password" minlength="8" required autocomplete="new-password"></label>
+        <p class="auth-error" id="resetPasswordError" hidden></p>
+        <div class="reset-password-actions">
+          <button type="button" class="button secondary" id="cancelResetPassword">Cancel</button>
+          <button type="submit" class="button primary">Save Password</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="{{ url_for('static', filename='admin_users.js') }}"></script>
 </body>
 </html>
