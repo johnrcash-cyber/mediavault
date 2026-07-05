@@ -1567,7 +1567,9 @@ def musicbrainz_request(path: str, query: dict | None = None) -> dict:
     return public_json_request(url, "MusicBrainz")
 
 
-def cover_art_for_release(release_id: str) -> str | None:
+def cover_art_for_release(
+    release_id: str, warning_collector: list[dict] | None = None
+) -> str | None:
     if not release_id:
         return None
     try:
@@ -1608,6 +1610,11 @@ def cover_art_for_release(release_id: str) -> str | None:
             "error=%s",
             release_id, type(exc).__name__, exc,
         )
+        if warning_collector is not None:
+            warning_collector.append({
+                "provider": "Cover Art Archive",
+                "error": str(exc) or type(exc).__name__,
+            })
         return None
 
 
@@ -1618,7 +1625,9 @@ def artist_credit_text(raw: dict) -> str:
     ).strip()
 
 
-def normalize_musicbrainz_release(raw: dict) -> dict:
+def normalize_musicbrainz_release(
+    raw: dict, warning_collector: list[dict] | None = None
+) -> dict:
     media = raw.get("media") or []
     tracks = []
     total_duration_ms = 0
@@ -1680,13 +1689,17 @@ def normalize_musicbrainz_release(raw: dict) -> dict:
         "external_id": raw.get("id") or "",
         "metadata_source": "MusicBrainz",
         "artwork_source": "Cover Art Archive",
-        "poster_url": cover_art_for_release(raw.get("id", "")),
+        "poster_url": cover_art_for_release(
+            raw.get("id", ""), warning_collector
+        ),
         "backdrop_url": "",
         "artist_image_url": "",
     }
 
 
-def fetch_musicbrainz_release(external_id: str) -> dict:
+def fetch_musicbrainz_release(
+    external_id: str, warning_collector: list[dict] | None = None
+) -> dict:
     if not re.fullmatch(
         r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
         r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
@@ -1699,7 +1712,7 @@ def fetch_musicbrainz_release(external_id: str) -> dict:
     )
     if not raw.get("id"):
         raise ValueError("MusicBrainz release not found.")
-    return normalize_musicbrainz_release(raw)
+    return normalize_musicbrainz_release(raw, warning_collector)
 
 
 def discogs_request(path: str, query: dict | None = None) -> dict:
@@ -2144,7 +2157,10 @@ def find_provider_title(
     return None
 
 
-def current_jellyfin_metadata(source: sqlite3.Row, user_id: int) -> dict:
+def current_jellyfin_metadata(
+    source: sqlite3.Row, user_id: int,
+    warning_collector: list[dict] | None = None,
+) -> dict:
     cached = json.loads(source["metadata_json"] or "{}")
     settings = jellyfin_settings(user_id)
     try:
@@ -2192,6 +2208,11 @@ def current_jellyfin_metadata(source: sqlite3.Row, user_id: int) -> dict:
             "Jellyfin metadata fetch failed item_id=%s error=%s; using cached source data",
             source["jellyfin_item_id"], exc,
         )
+        if warning_collector is not None:
+            warning_collector.append({
+                "provider": "Jellyfin",
+                "error": f"{exc}; cached source data was used",
+            })
         return cached
 
 
@@ -2219,7 +2240,10 @@ def save_metadata_attachment(
     return provider, metadata
 
 
-def enrich_media_item(item_id: int, user_id: int | None = None) -> tuple[str, dict]:
+def enrich_media_item(
+    item_id: int, user_id: int | None = None,
+    warning_collector: list[dict] | None = None,
+) -> tuple[str, dict]:
     user_id = user_id or active_user_id()
     item = db().execute(
         "SELECT id, title, year, media_type FROM media "
@@ -2259,7 +2283,9 @@ def enrich_media_item(item_id: int, user_id: int | None = None) -> tuple[str, di
         existing_metadata = {}
     if use_jellyfin_metadata:
         app.logger.info("Jellyfin metadata attempted item_id=%s", item_id)
-        jellyfin_metadata = current_jellyfin_metadata(source, user_id)
+        jellyfin_metadata = current_jellyfin_metadata(
+            source, user_id, warning_collector
+        )
         if jellyfin_metadata:
             app.logger.info(
                 "Jellyfin metadata found item_id=%s ids=%s",
@@ -2314,11 +2340,22 @@ def enrich_media_item(item_id: int, user_id: int | None = None) -> tuple[str, di
                     "External metadata fallback item_id=%s provider=%s id=%s",
                     item_id, provider, external_id,
                 )
-                fallback_metadata = fetcher(external_id)
+                fallback_metadata = (
+                    fetch_musicbrainz_release(
+                        external_id, warning_collector
+                    )
+                    if provider == "musicbrainz"
+                    else fetcher(external_id)
+                )
                 fallback_provider = provider
                 break
             except ValueError as exc:
                 errors.append(f"{provider}: {exc}")
+                if warning_collector is not None:
+                    warning_collector.append({
+                        "provider": provider.title(),
+                        "error": str(exc),
+                    })
     elif item["media_type"] in ("Movies", "Television"):
         configured = provider_settings()
         order = (
@@ -2353,6 +2390,11 @@ def enrich_media_item(item_id: int, user_id: int | None = None) -> tuple[str, di
                 break
             except ValueError as exc:
                 errors.append(f"{provider.upper()}: {exc}")
+                if warning_collector is not None:
+                    warning_collector.append({
+                        "provider": provider.upper(),
+                        "error": str(exc),
+                    })
     else:
         raise LookupError("Metadata enrichment is not available for this media type yet.")
 
@@ -2910,115 +2952,247 @@ def refresh_media_metadata(item_id: int):
         return jsonify({"error": str(exc)}), 400
 
 
-@app.post("/api/metadata/refresh-all")
-def refresh_all_metadata():
-    user_id = active_user_id()
+_metadata_refresh_lock = threading.Lock()
+_metadata_refresh_active_users: set[int] = set()
+
+
+def metadata_refresh_state(user_id: int) -> dict | None:
+    row = db().execute(
+        "SELECT value FROM user_settings "
+        "WHERE user_id = ? AND key = 'metadata_refresh_job'",
+        (user_id,),
+    ).fetchone()
+    if not row:
+        return None
     try:
-        items = db().execute(
-            "SELECT id, title, media_type FROM media "
-            "WHERE owner_id = ? "
-            "AND media_type IN ('Movies', 'Television', 'Music') "
-            "ORDER BY media_type, title",
-            (user_id,),
-        ).fetchall()
-    except Exception as exc:
-        app.logger.exception(
-            "Metadata refresh could not start source=%r error=%s",
-            "MediaVault Database / master catalog", exc,
-        )
-        return jsonify({
-            "success": False,
-            "processed": 0,
-            "enriched": 0,
-            "skipped": 0,
-            "failed": 0,
-            "errors": [{"error": str(exc)}],
-        }), 500
-    started_at = datetime.now(timezone.utc).isoformat()
-    app.logger.info(
-        "Metadata refresh started source=%r item_count=%s",
-        "MediaVault Database / master catalog", len(items),
+        return json.loads(row["value"])
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
+def store_metadata_refresh_state(user_id: int, result: dict) -> None:
+    result["updated_at"] = datetime.now(timezone.utc).isoformat()
+    payload = json.dumps(result, separators=(",", ":"))
+    db().execute(
+        """
+        INSERT INTO user_settings(user_id, key, value)
+        VALUES(?, 'metadata_refresh_job', ?)
+        ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value
+        """,
+        (user_id, payload),
     )
-    result = {
-        "success": True,
-        "processed": 0,
-        "enriched": 0,
-        "skipped": 0,
-        "failed": 0,
-        "errors": [],
-        "failures": [],
-        "categories": {
-            "Movies": {"processed": 0, "enriched": 0, "skipped": 0, "failed": 0},
-            "Television": {"processed": 0, "enriched": 0, "skipped": 0, "failed": 0},
-            "Music": {"processed": 0, "enriched": 0, "skipped": 0, "failed": 0},
-        },
-    }
-    for item in items:
-        category = result["categories"][item["media_type"]]
-        result["processed"] += 1
-        category["processed"] += 1
-        try:
-            enrich_media_item(item["id"], user_id)
-            result["enriched"] += 1
-            category["enriched"] += 1
-        except LookupError as exc:
-            result["skipped"] += 1
-            category["skipped"] += 1
-            result["failures"].append({
-                "id": item["id"], "title": item["title"],
-                "media_type": item["media_type"],
-                "status": "skipped", "error": str(exc),
-            })
-            app.logger.info(
-                "Metadata refresh skipped item_id=%s title=%r error=%s",
-                item["id"], item["title"], exc,
-            )
-        except (Exception, SystemExit) as exc:
-            db().rollback()
-            result["failed"] += 1
-            category["failed"] += 1
-            provider = (
-                "MusicBrainz/Discogs/Cover Art Archive/Last.fm"
-                if item["media_type"] == "Music"
-                else "OMDb/TMDb"
-            )
-            error = {
-                "id": item["id"], "title": item["title"],
-                "media_type": item["media_type"],
-                "provider": provider,
-                "status": "failed", "error": str(exc),
-            }
-            result["failures"].append(error)
-            result["errors"].append(error)
-            app.logger.error(
-                "Metadata refresh failed item_id=%s title=%r provider=%s "
-                "error_type=%s error=%s",
-                item["id"], item["title"], provider,
-                type(exc).__name__, exc, exc_info=True,
-            )
-    result["started_at"] = started_at
-    result["completed_at"] = datetime.now(timezone.utc).isoformat()
-    try:
+    if result.get("status") in ("completed", "failed"):
         db().execute(
             """
             INSERT INTO user_settings(user_id, key, value)
             VALUES(?, 'metadata_last_refresh_summary', ?)
             ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value
             """,
-            (user_id, json.dumps(result, separators=(",", ":"))),
+            (user_id, payload),
         )
-        db().commit()
-    except Exception as exc:
-        db().rollback()
-        app.logger.exception(
-            "Metadata refresh summary could not be stored error=%s", exc
-        )
-    app.logger.info(
-        "Metadata refresh complete source=%r item_count=%s enriched=%s "
-        "skipped=%s failed=%s",
-        "MediaVault Database / master catalog", result["processed"],
-        result["enriched"], result["skipped"], result["failed"],
+    db().commit()
+
+
+def new_metadata_refresh_result(total: int) -> dict:
+    started_at = datetime.now(timezone.utc).isoformat()
+    return {
+        "success": True,
+        "status": "running",
+        "message": f"Refresh started. 0 of {total} items processed.",
+        "total": total,
+        "processed": 0,
+        "enriched": 0,
+        "skipped": 0,
+        "failed": 0,
+        "warnings": 0,
+        "warning_details": [],
+        "errors": [],
+        "failures": [],
+        "categories": {
+            category: {
+                "processed": 0, "enriched": 0, "skipped": 0,
+                "failed": 0, "warnings": 0,
+            }
+            for category in ("Movies", "Television", "Music")
+        },
+        "started_at": started_at,
+        "updated_at": started_at,
+    }
+
+
+def run_metadata_refresh_job(user_id: int) -> None:
+    try:
+        with app.app_context():
+            items = db().execute(
+                "SELECT id, title, media_type FROM media "
+                "WHERE owner_id = ? "
+                "AND media_type IN ('Movies', 'Television', 'Music') "
+                "ORDER BY media_type, title",
+                (user_id,),
+            ).fetchall()
+            result = new_metadata_refresh_result(len(items))
+            store_metadata_refresh_state(user_id, result)
+            app.logger.info(
+                "Metadata refresh job started user_id=%s item_count=%s",
+                user_id, len(items),
+            )
+            for item in items:
+                category = result["categories"][item["media_type"]]
+                # Count an item before any provider call so persisted progress
+                # remains meaningful even when that provider fails.
+                result["processed"] += 1
+                category["processed"] += 1
+                item_warnings: list[dict] = []
+                try:
+                    enrich_media_item(
+                        item["id"], user_id, item_warnings
+                    )
+                    result["enriched"] += 1
+                    category["enriched"] += 1
+                except LookupError as exc:
+                    result["skipped"] += 1
+                    category["skipped"] += 1
+                    result["failures"].append({
+                        "id": item["id"], "title": item["title"],
+                        "media_type": item["media_type"],
+                        "status": "skipped", "error": str(exc),
+                    })
+                    app.logger.info(
+                        "Metadata refresh skipped item_id=%s title=%r "
+                        "provider=%s error=%s",
+                        item["id"], item["title"], item["media_type"], exc,
+                    )
+                except (Exception, SystemExit) as exc:
+                    db().rollback()
+                    result["failed"] += 1
+                    category["failed"] += 1
+                    provider = (
+                        "MusicBrainz/Discogs/Cover Art Archive/Last.fm"
+                        if item["media_type"] == "Music"
+                        else "OMDb/TMDb"
+                    )
+                    error = {
+                        "id": item["id"], "title": item["title"],
+                        "media_type": item["media_type"],
+                        "provider": provider,
+                        "status": "failed",
+                        "error": str(exc) or type(exc).__name__,
+                    }
+                    result["failures"].append(error)
+                    result["errors"].append(error)
+                    app.logger.error(
+                        "Metadata refresh failed item_id=%s title=%r "
+                        "provider=%s error_type=%s error=%s",
+                        item["id"], item["title"], provider,
+                        type(exc).__name__, exc, exc_info=True,
+                    )
+                for warning in item_warnings:
+                    detail = {
+                        "id": item["id"], "title": item["title"],
+                        "media_type": item["media_type"],
+                        "provider": warning.get("provider", "Metadata provider"),
+                        "status": "warning",
+                        "error": warning.get("error", "Provider warning"),
+                    }
+                    result["warnings"] += 1
+                    category["warnings"] += 1
+                    if len(result["warning_details"]) < 50:
+                        result["warning_details"].append(detail)
+                    app.logger.warning(
+                        "Metadata refresh warning item_id=%s title=%r "
+                        "provider=%s error=%s",
+                        item["id"], item["title"], detail["provider"],
+                        detail["error"],
+                    )
+                result["message"] = (
+                    f"{result['processed']} of {result['total']} processed, "
+                    f"{result['enriched']} enriched, "
+                    f"{result['skipped']} skipped, "
+                    f"{result['failed']} failed."
+                )
+                store_metadata_refresh_state(user_id, result)
+            result["status"] = "completed"
+            result["completed_at"] = datetime.now(timezone.utc).isoformat()
+            prefix = (
+                "Refresh completed with warnings."
+                if result["warnings"] or result["failed"]
+                else "Refresh completed."
+            )
+            result["message"] = (
+                f"{prefix} {result['processed']} processed, "
+                f"{result['enriched']} enriched, "
+                f"{result['skipped']} skipped, "
+                f"{result['failed']} failed, "
+                f"{result['warnings']} warnings."
+            )
+            store_metadata_refresh_state(user_id, result)
+            app.logger.info(
+                "Metadata refresh job complete user_id=%s processed=%s "
+                "enriched=%s skipped=%s failed=%s warnings=%s",
+                user_id, result["processed"], result["enriched"],
+                result["skipped"], result["failed"], result["warnings"],
+            )
+    except (Exception, SystemExit) as exc:
+        with app.app_context():
+            result = metadata_refresh_state(user_id) or new_metadata_refresh_result(0)
+            result["success"] = False
+            result["status"] = "failed"
+            result["completed_at"] = datetime.now(timezone.utc).isoformat()
+            result["message"] = (
+                "Metadata refresh job failed. Check server logs. "
+                f"{result['processed']} items were processed before the failure."
+            )
+            result["errors"].append({
+                "status": "job_failed",
+                "error": str(exc) or type(exc).__name__,
+            })
+            store_metadata_refresh_state(user_id, result)
+            app.logger.error(
+                "Metadata refresh job crashed user_id=%s error_type=%s error=%s",
+                user_id, type(exc).__name__, exc, exc_info=True,
+            )
+    finally:
+        with _metadata_refresh_lock:
+            _metadata_refresh_active_users.discard(user_id)
+
+
+@app.post("/api/metadata/refresh-all")
+def refresh_all_metadata():
+    user_id = active_user_id()
+    current = metadata_refresh_state(user_id)
+    if current and current.get("status") == "running":
+        return jsonify(current), 202
+    with _metadata_refresh_lock:
+        if user_id in _metadata_refresh_active_users:
+            current = metadata_refresh_state(user_id)
+            return jsonify(current or new_metadata_refresh_result(0)), 202
+        _metadata_refresh_active_users.add(user_id)
+    initial = new_metadata_refresh_result(
+        db().execute(
+            "SELECT COUNT(*) FROM media WHERE owner_id = ? "
+            "AND media_type IN ('Movies', 'Television', 'Music')",
+            (user_id,),
+        ).fetchone()[0]
     )
+    store_metadata_refresh_state(user_id, initial)
+    threading.Thread(
+        target=run_metadata_refresh_job,
+        args=(user_id,),
+        name=f"metadata-refresh-{user_id}",
+        daemon=True,
+    ).start()
+    return jsonify(initial), 202
+
+
+@app.get("/api/metadata/refresh-all/status")
+def metadata_refresh_status():
+    result = metadata_refresh_state(active_user_id())
+    if not result:
+        return jsonify({
+            **new_metadata_refresh_result(0),
+            "status": "idle",
+            "message": "No metadata refresh has been run yet.",
+        })
     return jsonify(result)
 
 

@@ -28,6 +28,22 @@ function toast(message, duration = 3500) {
   toast.timer = setTimeout(() => element.classList.remove("show"), duration);
 }
 
+const wait = (milliseconds) =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function startAndPollMetadataRefresh(onUpdate) {
+  let result = await api("/api/metadata/refresh-all", {
+    method: "POST", body: "{}",
+  });
+  onUpdate(result);
+  while (result.status === "running") {
+    await wait(1500);
+    result = await api("/api/metadata/refresh-all/status");
+    onUpdate(result);
+  }
+  return result;
+}
+
 function renderSourceStatus(statuses) {
   $("#sourceHealthGrid").innerHTML = statuses
     .filter((source) => source.source_name !== "Jellyfin")
@@ -152,26 +168,37 @@ $("#refreshAllMetadata").addEventListener("click", async () => {
   $("#bulkStatusTitle").textContent = "Refresh started";
   $("#bulkStatusNote").textContent = "Checking library items against configured providers…";
   button.disabled = true;
-  try {
-    const result = await api("/api/metadata/refresh-all", {
-      method: "POST", body: "{}",
-    });
+  const renderResult = (result) => {
     ["Processed", "Enriched", "Skipped", "Failed"].forEach((name) => {
       $(`#bulk${name}`).textContent = result[name.toLowerCase()] || 0;
     });
-    $("#bulkStatusTitle").textContent = "Refresh complete";
-    $("#bulkStatusNote").textContent = `Completed ${new Date().toLocaleString()}`;
+    $("#bulkStatusTitle").textContent = result.status === "running"
+      ? "Refresh in progress"
+      : result.status === "failed"
+        ? "Refresh failed"
+        : result.warnings || result.failed
+          ? "Refresh completed with warnings"
+          : "Refresh complete";
+    $("#bulkStatusNote").textContent = result.message || "";
     $("#bulkCategoryStatus").innerHTML = Object.entries(result.categories || {})
       .map(([name, counts]) =>
-        `<span><strong>${escapeHtml(name)}</strong> ${counts.enriched || 0} enriched · ${counts.skipped || 0} skipped · ${counts.failed || 0} failed</span>`
+        `<span><strong>${escapeHtml(name)}</strong> ${counts.enriched || 0} enriched · ${counts.skipped || 0} skipped · ${counts.failed || 0} failed · ${counts.warnings || 0} warnings</span>`
       ).join("");
-    lastFailures = result.failures || [];
+    lastFailures = [
+      ...(result.failures || []),
+      ...(result.warning_details || []),
+    ];
     $("#viewFailedItems").hidden = lastFailures.length === 0;
-    toast(`Metadata refresh complete · ${result.enriched || 0} enriched.`);
+    $("#viewFailedItems").textContent = "View warning/error details";
+  };
+  try {
+    const result = await startAndPollMetadataRefresh(renderResult);
+    toast(result.message || "Metadata refresh complete.", 7000);
   } catch (error) {
-    $("#bulkStatusTitle").textContent = "Refresh failed";
-    $("#bulkStatusNote").textContent = error.message;
-    toast("Metadata refresh failed. Check server logs.", 5000);
+    // Preserve the last useful progress snapshot if polling is interrupted.
+    $("#bulkStatusNote").textContent =
+      "Connection interrupted. Refresh status is still saved on the server.";
+    toast("Could not retrieve the latest refresh status.", 5000);
   } finally {
     button.disabled = false;
   }
@@ -181,7 +208,7 @@ $("#viewFailedItems").addEventListener("click", () => {
   const list = $("#failedItems");
   list.hidden = !list.hidden;
   list.innerHTML = lastFailures.map((item) =>
-    `<p><strong>${escapeHtml(item.title || "Unknown item")}</strong> — ${escapeHtml(item.error || item.status || "Not enriched")}</p>`
+    `<p><strong>${escapeHtml(item.title || "Refresh job")}</strong>${item.provider ? ` · ${escapeHtml(item.provider)}` : ""} — ${escapeHtml(item.error || item.status || "Not enriched")}</p>`
   ).join("");
 });
 

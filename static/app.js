@@ -16,6 +16,23 @@ async function api(url, options = {}) {
   return response.status === 204 ? null : response.json();
 }
 
+const wait = (milliseconds) =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function startAndPollMetadataRefresh(onUpdate = () => {}) {
+  let result = await api("/api/metadata/refresh-all", {
+    method: "POST",
+    body: "{}",
+  });
+  onUpdate(result);
+  while (result.status === "running") {
+    await wait(1500);
+    result = await api("/api/metadata/refresh-all/status");
+    onUpdate(result);
+  }
+  return result;
+}
+
 function escapeHtml(value = "") {
   const div = document.createElement("div");
   div.textContent = value;
@@ -1562,24 +1579,39 @@ $("#refreshAllMetadata").addEventListener("click", async () => {
   $("#bulkCategoryStatus").innerHTML = "";
   $("#refreshAllMetadata").disabled = true;
   $("#refreshAllMetadata").textContent = "Refreshing…";
-  try {
-    const result = await api("/api/metadata/refresh-all", { method: "POST", body: "{}" });
-    $("#bulkProcessed").textContent = result.processed;
-    $("#bulkEnriched").textContent = result.enriched;
-    $("#bulkSkipped").textContent = result.skipped;
-    $("#bulkFailed").textContent = result.failed;
-    $("#bulkStatusTitle").textContent = "Metadata refresh complete";
-    $("#bulkStatusNote").textContent = `${result.enriched} enriched · ${result.skipped} skipped · ${result.failed} failed`;
+  const renderResult = (result) => {
+    $("#bulkProcessed").textContent = result.processed || 0;
+    $("#bulkEnriched").textContent = result.enriched || 0;
+    $("#bulkSkipped").textContent = result.skipped || 0;
+    $("#bulkFailed").textContent = result.failed || 0;
+    $("#bulkStatusTitle").textContent = result.status === "running"
+      ? "Refresh in progress"
+      : result.status === "failed"
+        ? "Refresh failed"
+        : result.warnings || result.failed
+          ? "Metadata refresh completed with warnings"
+          : "Metadata refresh complete";
+    $("#bulkStatusNote").textContent = result.message || "";
     $("#bulkCategoryStatus").innerHTML = Object.entries(result.categories || {}).map(([name, counts]) =>
-      `<div><strong>${escapeHtml(name)}</strong><span>${counts.enriched} enriched · ${counts.skipped} skipped · ${counts.failed} failed</span></div>`
+      `<div><strong>${escapeHtml(name)}</strong><span>${counts.enriched || 0} enriched · ${counts.skipped || 0} skipped · ${counts.failed || 0} failed · ${counts.warnings || 0} warnings</span></div>`
     ).join("");
-    const failed = result.failures.filter((item) => item.status === "failed");
-    $("#viewFailedItems").hidden = !failed.length;
-    $("#failedItems").innerHTML = failed.map((item) => `<div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.error)}</span></div>`).join("");
+    const details = [
+      ...(result.failures || []),
+      ...(result.warning_details || []),
+    ];
+    $("#viewFailedItems").hidden = !details.length;
+    $("#viewFailedItems").textContent = "View warning/error details";
+    $("#failedItems").innerHTML = details.map((item) =>
+      `<div><strong>${escapeHtml(item.title || "Refresh job")}</strong><span>${item.provider ? `${escapeHtml(item.provider)} · ` : ""}${escapeHtml(item.error || item.status || "Not enriched")}</span></div>`
+    ).join("");
+  };
+  try {
+    const result = await startAndPollMetadataRefresh(renderResult);
+    toast(result.message || "Metadata refresh complete.", 7000);
     await loadDashboard();
   } catch (error) {
-    $("#bulkStatusTitle").textContent = "Refresh failed";
-    $("#bulkStatusNote").textContent = error.message;
+    $("#bulkStatusNote").textContent =
+      "Connection interrupted. Refresh status is still saved on the server.";
   } finally {
     $("#refreshAllMetadata").disabled = false;
     $("#refreshAllMetadata").textContent = "Refresh All Metadata";
@@ -1650,14 +1682,8 @@ $("#sourceFullRefreshButton").addEventListener("click", async () => {
   button.textContent = "Refreshing…";
   toast("Metadata refresh started.", 3000);
   try {
-    const result = await api("/api/metadata/refresh-all", {
-      method: "POST",
-      body: "{}",
-    });
-    toast(
-      `Metadata refresh complete · ${result.processed || 0} processed · ${result.enriched || 0} enriched · ${result.skipped || 0} skipped · ${result.failed || 0} failed`,
-      7000,
-    );
+    const result = await startAndPollMetadataRefresh();
+    toast(result.message || "Metadata refresh complete.", 7000);
     await Promise.all([loadSources(), loadDashboard()]);
   } catch (error) {
     console.error("Master catalog metadata refresh failed:", error);
