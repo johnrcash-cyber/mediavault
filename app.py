@@ -3710,6 +3710,44 @@ def get_provider_settings():
     })
 
 
+@app.get("/api/metadata/services")
+def metadata_services():
+    """Expose provider availability without revealing global credentials."""
+    settings = provider_settings()
+    return jsonify([
+        {
+            "name": "OMDb", "code": "OMDb",
+            "description": "Movie & TV metadata",
+            "enabled": bool(settings["omdb_api_key"]),
+        },
+        {
+            "name": "TMDb", "code": "TM",
+            "description": "Movie & TV metadata",
+            "enabled": bool(settings["tmdb_api_key"]),
+        },
+        {
+            "name": "MusicBrainz", "code": "MB",
+            "description": "Music metadata", "enabled": True,
+        },
+        {
+            "name": "Discogs", "code": "D",
+            "description": "Music & release metadata",
+            "enabled": bool(settings["discogs_token"]),
+        },
+        {
+            "name": "Last.fm", "code": "LF",
+            "description": "Music metadata",
+            "enabled": bool(settings["lastfm_api_key"]),
+        },
+        {
+            "name": "RAWG", "code": "R",
+            "description": "Game metadata",
+            "enabled": bool(settings["rawg_api_key"]),
+            "coming_soon": True,
+        },
+    ])
+
+
 @app.get("/api/source-status")
 def get_source_status():
     if not require_admin():

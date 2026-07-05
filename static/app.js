@@ -323,7 +323,7 @@ function navigationHash() {
     return `#/${mediaTypeRoutes[state.type] || "library"}`;
   }
   if (state.view === "wishlist") return "#/wishlist";
-  if (state.view === "settings") return "#/settings/sources";
+  if (state.view === "settings") return `#/settings/${state.settingsTab}`;
   return "#/dashboard";
 }
 
@@ -343,7 +343,10 @@ function navigationFromLocation(historyState = null) {
   const parts = window.location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (parts[0] === "wishlist") return { view: "wishlist" };
   if (parts[0] === "settings") {
-    return { view: "settings", settingsTab: "sources" };
+    return {
+      view: "settings",
+      settingsTab: parts[1] === "preferences" ? "preferences" : "sources",
+    };
   }
   if (routeMediaTypes[parts[0]]) {
     return { view: "collection", type: routeMediaTypes[parts[0]] };
@@ -375,14 +378,17 @@ function setView(view, filters = {}, options = {}) {
   if (view === "wishlist") loadWishlist();
   else clearTimeout(wishlistRefreshTimer);
   if (view === "settings") {
-    setSettingsTab("sources", { historyMode: "none" });
-    loadSources();
+    setSettingsTab(state.settingsTab, { historyMode: "none" });
+    if (state.settingsTab === "sources") loadSources();
   }
 }
 
 async function loadSources() {
   try {
-    const data = await api("/api/sources");
+    const [data, services] = await Promise.all([
+      api("/api/sources"),
+      api("/api/metadata/services"),
+    ]);
     $("#localSourceCount").textContent = data.local.items;
     const metadataRefresh = data.local.metadata_refresh;
     $("#localMetadataLastRefresh").textContent = metadataRefresh?.completed_at
@@ -393,7 +399,22 @@ async function loadSources() {
       : "—";
     renderCatalogSourceHealth(data);
     renderSourceAccordions(data.instances || []);
+    renderMetadataServices(services || []);
   } catch (error) { toast(error.message); }
+}
+
+function renderMetadataServices(services) {
+  const target = $("#metadataServicesGrid");
+  if (!target) return;
+  target.innerHTML = services.map((service) => {
+    const status = service.enabled ? "Enabled"
+      : service.coming_soon ? "Coming soon" : "Disabled";
+    return `<article class="metadata-service-row">
+      <span class="metadata-service-icon">${escapeHtml(service.code)}</span>
+      <div><strong>${escapeHtml(service.name)}</strong><small>${escapeHtml(service.description)}</small></div>
+      <span class="service-availability ${service.enabled ? "enabled" : "disabled"}">${status}</span>
+    </article>`;
+  }).join("");
 }
 
 function renderCatalogSourceHealth(data) {
@@ -449,11 +470,9 @@ function renderExternalSourceCards(instances) {
 }
 
 function renderSourceAccordions(instances) {
-  if (!instances.length) {
-    $("#externalSourceCards").innerHTML = `<div class="sources-empty-state"><strong>No external sources connected.</strong><span>Connect Jellyfin or add an import source when you are ready.</span><button class="button primary" data-source-action="add">＋ Add Source</button></div>`;
-    return;
-  }
-  $("#externalSourceCards").innerHTML = instances.map((source) => {
+  const connectedJellyfin = instances.find((source) => source.type === "jellyfin");
+  const importedSources = instances.filter((source) => source.type !== "jellyfin");
+  const jellyfinMarkup = connectedJellyfin ? [connectedJellyfin].map((source) => {
     const jellyfin = source.type === "jellyfin";
     const details = source.details || {};
     const lastActivity = jellyfin ? details.last_sync : details.last_import;
@@ -469,7 +488,27 @@ function renderSourceAccordions(instances) {
       </div>
       <div class="source-accordion-panel" hidden>${jellyfin ? jellyfinConfigurationMarkup(source) : '<p class="source-panel-note">This imported source has no connection settings.</p><div class="source-panel-actions"><button class="text-button danger-text" data-source-action="delete">Delete</button></div>'}</div>
     </article>`;
+  }).join("") : `<button class="user-source-row source-placeholder" data-source-action="add">
+    <span class="user-source-icon jellyfin">J</span><span><strong>Jellyfin</strong><small>Media Server</small></span>
+    <span class="source-state">Not connected</span><b>›</b>
+  </button>`;
+  const placeholders = [
+    ["P", "Plex", "Media Server", "Coming soon"],
+    ["S", "Steam", "Game Library", "Coming soon"],
+    ["▰", "Folder Import", "Local Folders", "Coming soon"],
+  ].map(([icon, name, type, status]) => `<div class="user-source-row source-placeholder disabled">
+    <span class="user-source-icon">${icon}</span><span><strong>${name}</strong><small>${type}</small></span>
+    <span class="source-state">${status}</span><b>›</b>
+  </div>`).join("");
+  const imports = importedSources.map((source) => {
+    const details = source.details || {};
+    return `<article class="user-source-row imported-source external-instance" data-source-type="${escapeHtml(source.type)}" data-source-id="${escapeHtml(source.id)}">
+      <span class="user-source-icon import">⇩</span><span><strong>${escapeHtml(source.name)}</strong><small>${escapeHtml(source.type_label)}</small></span>
+      <span class="source-state imported">${details.items || 0} items</span>
+      <button class="text-button" data-source-action="view">View</button>
+    </article>`;
   }).join("");
+  $("#externalSourceCards").innerHTML = jellyfinMarkup + placeholders + imports;
 }
 
 function jellyfinConfigurationMarkup(source = {}) {
@@ -550,14 +589,14 @@ function renderSourceStatus(statuses) {
 }
 
 function setSettingsTab(tab, options = {}) {
-  state.settingsTab = "sources";
+  state.settingsTab = tab === "preferences" ? "preferences" : "sources";
   $$(".settings-tab").forEach((button) =>
-    button.classList.toggle("active", button.dataset.settingsTab === "sources")
+    button.classList.toggle("active", button.dataset.settingsTab === state.settingsTab)
   );
   $$("[data-settings-section]").forEach((section) => {
     section.hidden = section.id === "importPreview"
-      ? !state.jellyfinPreview
-      : section.dataset.settingsSection !== "sources";
+      ? state.settingsTab !== "sources" || !state.jellyfinPreview
+      : section.dataset.settingsSection !== state.settingsTab;
   });
   if (state.view === "settings") {
     updateNavigationHistory(options.historyMode || "push");
@@ -1630,7 +1669,10 @@ $$(".catalog-preview-tabs .preview-tab").forEach((tab) =>
   tab.addEventListener("click", () => renderCatalogPreview(tab.dataset.catalogPreview))
 );
 $$(".settings-tab").forEach((button) =>
-  button.addEventListener("click", () => setSettingsTab(button.dataset.settingsTab))
+  button.addEventListener("click", () => {
+    setSettingsTab(button.dataset.settingsTab);
+    if (button.dataset.settingsTab === "sources") loadSources();
+  })
 );
 $("#refreshSourceStatus")?.addEventListener("click", async () => {
   $("#refreshSourceStatus").disabled = true;
@@ -1652,7 +1694,7 @@ function restoreNavigation(historyState = null, historyMode = "none") {
       status: navigation.status || "",
       origin: navigation.origin || "",
       query: navigation.query || "",
-      settingsTab: "sources",
+      settingsTab: navigation.settingsTab || "sources",
     },
     { historyMode },
   );
