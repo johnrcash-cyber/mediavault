@@ -1597,12 +1597,19 @@ $("#refreshLibraryAction").addEventListener("click", async () => {
   button.disabled = true;
   button.innerHTML = "<span>↻</span> Refreshing…";
   try {
-    const result = await api("/api/jellyfin/sync", { method: "POST", body: "{}" });
+    const result = await api("/api/jellyfin/sync", {
+      method: "POST",
+      credentials: "same-origin",
+      body: "{}",
+    });
     toast(`${result.processed || 0} processed · ${result.added || 0} added · ${result.updated || 0} updated · ${result.skipped || 0} skipped · ${result.failed || 0} failed`, 6000);
     await loadDashboard();
     if (state.view === "collection") await loadCollection();
     if (state.view === "settings") await loadSources();
-  } catch (error) { toast(`Library refresh failed: ${error.message}`, 6000); }
+  } catch (error) {
+    console.error("Library refresh failed", error);
+    toast("Library refresh failed. Check server logs.", 6000);
+  }
   finally { button.disabled = false; button.innerHTML = original; }
 });
 $("#addSourceButton").addEventListener("click", () => {

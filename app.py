@@ -4298,10 +4298,69 @@ def update_jellyfin_libraries():
 
 @app.post("/api/jellyfin/sync")
 def sync_selected_jellyfin_libraries():
+    user = current_user()
+    user_id = int(user["id"])
+    settings = jellyfin_settings(user_id)
+    configured_source_count = int(
+        bool(settings.get("server_url") or settings.get("api_key"))
+    )
+    enabled_library_count = db().execute(
+        "SELECT COUNT(*) FROM jellyfin_libraries "
+        "WHERE user_id = ? AND enabled = 1 AND media_category IS NOT NULL",
+        (user_id,),
+    ).fetchone()[0]
+    app.logger.info(
+        "Library refresh started user_id=%s email=%s source_count=%s "
+        "enabled_library_count=%s",
+        user_id, user["email"], configured_source_count, enabled_library_count,
+    )
+
+    # A new user's vault legitimately has no external source yet. Treat that as
+    # an empty user-scoped refresh instead of falling through to the legacy
+    # global-settings assumption in normalize_server_url().
+    if not settings.get("server_url") and not settings.get("api_key"):
+        result = {
+            "processed": 0,
+            "added": 0,
+            "updated": 0,
+            "skipped": 0,
+            "failed": 0,
+            "libraries": [],
+            "source_count": 0,
+            "message": "No sources configured for this account.",
+        }
+        app.logger.info(
+            "Library refresh completed user_id=%s email=%s source_count=0 "
+            "refreshed_item_count=0 processed=0 failed=0",
+            user_id, user["email"],
+        )
+        return jsonify(result)
+
     try:
-        return jsonify(sync_jellyfin_libraries())
+        result = sync_jellyfin_libraries(user_id)
+        refreshed_item_count = result.get("added", 0) + result.get("updated", 0)
+        app.logger.info(
+            "Library refresh completed user_id=%s email=%s source_count=%s "
+            "refreshed_item_count=%s processed=%s failed=%s",
+            user_id, user["email"], configured_source_count,
+            refreshed_item_count, result.get("processed", 0),
+            result.get("failed", 0),
+        )
+        return jsonify(result)
     except ValueError as exc:
+        app.logger.warning(
+            "Library refresh failed user_id=%s email=%s source_count=%s error=%s",
+            user_id, user["email"], configured_source_count, exc,
+        )
         return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        app.logger.exception(
+            "Library refresh failed user_id=%s email=%s source_count=%s error=%s",
+            user_id, user["email"], configured_source_count, exc,
+        )
+        return jsonify({
+            "error": "Library refresh failed. Check server logs."
+        }), 500
 
 
 @app.post("/api/jellyfin/full-refresh")
