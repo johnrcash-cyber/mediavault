@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="{{ theme|default('mediavault-dark') }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -25,6 +25,7 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='base.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='themes.css') }}">
 </head>
 <body>
   <div class="app-shell">
@@ -239,10 +240,32 @@
               <div id="metadataServicesGrid" class="metadata-service-list"></div>
             </section>
           </div>
-          <section class="user-settings-panel preferences-placeholder" data-settings-section="preferences" hidden>
-            <p class="eyebrow">PREFERENCES</p>
-            <h2>Preferences</h2>
-            <p>Personal display and dashboard preferences will live here.</p>
+          <section class="user-settings-panel theme-preferences-panel" data-settings-section="preferences" hidden>
+            <div class="user-settings-panel-head">
+              <div><p class="eyebrow">PREFERENCES</p><h2>Theme</h2><p>Choose how MediaVault looks for your account.</p></div>
+            </div>
+            <form id="themePreferenceForm">
+              <div class="theme-choice-grid">
+                {% for value, label in {
+                  'mediavault-dark': 'MediaVault Dark',
+                  'midnight-blue': 'Midnight Blue',
+                  'slate': 'Slate',
+                  'forest-green': 'Forest Green',
+                  'mediavault-light': 'MediaVault Light'
+                }.items() %}
+                <label class="theme-choice" data-theme-preview="{{ value }}">
+                  <input type="radio" name="theme" value="{{ value }}" {% if theme == value %}checked{% endif %}>
+                  <span class="theme-swatch"><i></i><i></i><i></i></span>
+                  <strong>{{ label }}</strong>
+                  <small>{% if value == 'mediavault-dark' %}The original MediaVault dark palette.{% elif value == 'midnight-blue' %}Deep navy surfaces with crisp blue accents.{% elif value == 'slate' %}Cool neutral surfaces with muted teal accents.{% elif value == 'forest-green' %}Dark evergreen surfaces with natural green accents.{% else %}Bright, clean surfaces with readable contrast.{% endif %}</small>
+                </label>
+                {% endfor %}
+              </div>
+              <div class="theme-preference-actions">
+                <button class="button primary" type="submit">Save Theme</button>
+                <span id="themePreferenceStatus" role="status"></span>
+              </div>
+            </form>
           </section>
         </section>
       </div>

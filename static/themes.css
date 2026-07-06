@@ -1,0 +1,66 @@
+html[data-theme="mediavault-dark"]{
+  color-scheme:dark;
+  --bg:#0c0d10;--surface:#141519;--surface-2:#1a1b20;--line:#292b31;
+  --text:#f4f1eb;--muted:#98999f;--accent:#f06b54;--accent-dark:#d95540;
+  --panel:#15161a;--panel-2:#101115;--input:#101115;
+  --sidebar-bg:#101115;--topbar-bg:rgba(12,13,16,.91);
+}
+html[data-theme="midnight-blue"]{
+  color-scheme:dark;
+  --bg:#07111f;--surface:#0d1b2d;--surface-2:#12243a;--line:#29405e;
+  --text:#edf5ff;--muted:#91a7c1;--accent:#4f9cff;--accent-dark:#347bd4;
+  --panel:#0d1b2d;--panel-2:#091726;--input:#081421;
+  --sidebar-bg:#091522;--topbar-bg:rgba(7,17,31,.92);
+}
+html[data-theme="slate"]{
+  color-scheme:dark;
+  --bg:#11161b;--surface:#1b232b;--surface-2:#222d36;--line:#354550;
+  --text:#edf1f3;--muted:#9aa9b2;--accent:#63b7ad;--accent-dark:#438f87;
+  --panel:#1b232b;--panel-2:#151d23;--input:#121a20;
+  --sidebar-bg:#151c22;--topbar-bg:rgba(17,22,27,.92);
+}
+html[data-theme="forest-green"]{
+  color-scheme:dark;
+  --bg:#08130e;--surface:#10251a;--surface-2:#173122;--line:#2c4a38;
+  --text:#eef7f1;--muted:#94ad9d;--accent:#62c98a;--accent-dark:#3fa76a;
+  --panel:#10251a;--panel-2:#0c1d14;--input:#0a1811;
+  --sidebar-bg:#0c1b13;--topbar-bg:rgba(8,19,14,.92);
+}
+html[data-theme="mediavault-light"]{
+  color-scheme:light;
+  --bg:#eef1f4;--surface:#fff;--surface-2:#f5f7f9;--line:#cfd6dd;
+  --text:#1c242b;--muted:#64717c;--accent:#d95d49;--accent-dark:#bd4938;
+  --panel:#fff;--panel-2:#f7f8fa;--input:#fff;
+  --sidebar-bg:#e3e8ed;--topbar-bg:rgba(238,241,244,.94);
+}
+body{background:var(--bg);color:var(--text)}
+.sidebar{background:var(--sidebar-bg);border-color:var(--line)}
+.topbar{background:var(--topbar-bg);border-color:var(--line)}
+.global-search,.media-card,.stat-card,.modal,.quick-view,.user-settings-panel,
+.user-source-row,.metadata-service-row,.settings-panel,.source-health-panel,
+.source-model-card,.source-accordion,.auth-card,.account-card,
+.profile-avatar-section,.profile-section{background:var(--panel);border-color:var(--line);color:var(--text)}
+.global-search input,.form-grid input,.form-grid select,.form-grid textarea,
+.settings-form input,.settings-form select,.auth-form input,.auth-form select{
+  background:var(--input);border-color:var(--line);color:var(--text)
+}
+.button.secondary,.icon-button{background:var(--surface-2);color:var(--text);border-color:var(--line)}
+.nav-link:hover,.nav-link.active{background:var(--surface-2);color:var(--text)}
+.card-meta,.metadata-grid,.notes-section,.source-card-actions{border-color:var(--line)}
+.quick-backdrop{background:linear-gradient(145deg,var(--surface-2),var(--panel))}
+.quick-backdrop::after{background:linear-gradient(to bottom,transparent 20%,var(--panel))}
+.theme-choice{background:var(--panel-2)}
+.auth-page{background:radial-gradient(circle at 50% 0,var(--surface-2) 0,var(--bg) 52%)}
+html[data-theme="mediavault-light"] .media-card,
+html[data-theme="mediavault-light"] .stat-card,
+html[data-theme="mediavault-light"] .user-settings-panel,
+html[data-theme="mediavault-light"] .settings-panel,
+html[data-theme="mediavault-light"] .quick-view,
+html[data-theme="mediavault-light"] .modal{
+  box-shadow:0 10px 28px rgba(43,55,66,.09)
+}
+html[data-theme="mediavault-light"] .card-body>p,
+html[data-theme="mediavault-light"] .quick-overview,
+html[data-theme="mediavault-light"] .page-heading p{color:#5e6b75}
+html[data-theme="mediavault-light"] .format-badge,
+html[data-theme="mediavault-light"] .provider-badge{color:#fff}

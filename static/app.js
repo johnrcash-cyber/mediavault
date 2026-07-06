@@ -395,6 +395,22 @@ function setView(view, filters = {}, options = {}) {
   if (view === "settings") {
     setSettingsTab(state.settingsTab, { historyMode: "none" });
     if (state.settingsTab === "sources") loadSources();
+    if (state.settingsTab === "preferences") loadPreferences();
+  }
+}
+
+async function loadPreferences() {
+  try {
+    const preferences = await api("/api/preferences");
+    const selected = document.querySelector(
+      `input[name="theme"][value="${preferences.theme}"]`
+    );
+    if (selected) selected.checked = true;
+    document.documentElement.dataset.theme =
+      preferences.theme || "mediavault-dark";
+  } catch (error) {
+    const status = $("#themePreferenceStatus");
+    if (status) status.textContent = error.message;
   }
 }
 
@@ -1702,8 +1718,29 @@ $$(".settings-tab").forEach((button) =>
   button.addEventListener("click", () => {
     setSettingsTab(button.dataset.settingsTab);
     if (button.dataset.settingsTab === "sources") loadSources();
+    if (button.dataset.settingsTab === "preferences") loadPreferences();
   })
 );
+$("#themePreferenceForm")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const selected = document.querySelector('input[name="theme"]:checked');
+  const status = $("#themePreferenceStatus");
+  if (!selected) {
+    status.textContent = "Choose a theme.";
+    return;
+  }
+  status.textContent = "Saving…";
+  try {
+    const result = await api("/api/preferences/theme", {
+      method: "PUT",
+      body: JSON.stringify({ theme: selected.value }),
+    });
+    document.documentElement.dataset.theme = result.theme;
+    status.textContent = `${result.label} saved.`;
+  } catch (error) {
+    status.textContent = error.message;
+  }
+});
 $("#refreshSourceStatus")?.addEventListener("click", async () => {
   $("#refreshSourceStatus").disabled = true;
   $("#refreshSourceStatus").textContent = "Checking…";

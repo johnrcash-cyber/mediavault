@@ -76,6 +76,13 @@ FORMATS = (
 )
 STATUSES = ("Unassigned", "Owned", "Borrowed", "Archived")
 CONDITIONS = ("New", "Like New", "Good", "Fair", "Poor", "Unknown")
+THEMES = {
+    "mediavault-dark": "MediaVault Dark",
+    "midnight-blue": "Midnight Blue",
+    "slate": "Slate",
+    "forest-green": "Forest Green",
+    "mediavault-light": "MediaVault Light",
+}
 
 
 def db() -> sqlite3.Connection:
@@ -743,6 +750,15 @@ def active_user_id() -> int:
     if not user:
         raise RuntimeError("Authenticated user context is required.")
     return int(user["id"])
+
+
+def user_theme(user_id: int) -> str:
+    row = db().execute(
+        "SELECT value FROM user_settings WHERE user_id = ? AND key = 'theme'",
+        (user_id,),
+    ).fetchone()
+    theme = row["value"] if row else "mediavault-dark"
+    return theme if theme in THEMES else "mediavault-dark"
 
 
 def row_to_dict(row: sqlite3.Row) -> dict:
@@ -3098,6 +3114,7 @@ def profile():
     return render_template(
         "profile.html",
         user=current_user(),
+        theme=user_theme(int(user["id"])),
         success=success,
         display_name_error=display_name_error,
         password_error=password_error,
@@ -3368,7 +3385,39 @@ def index():
         formats=FORMATS,
         statuses=STATUSES,
         conditions=CONDITIONS,
+        theme=user_theme(int(user["id"])),
     )
+
+
+@app.get("/api/preferences")
+def get_preferences():
+    theme = user_theme(active_user_id())
+    return jsonify({
+        "theme": theme,
+        "themes": [
+            {"value": value, "label": label}
+            for value, label in THEMES.items()
+        ],
+    })
+
+
+@app.put("/api/preferences/theme")
+def update_theme_preference():
+    user_id = active_user_id()
+    payload = request.get_json(silent=True) or {}
+    theme = str(payload.get("theme", "")).strip()
+    if theme not in THEMES:
+        return jsonify({"error": "Choose a valid theme."}), 400
+    db().execute(
+        """
+        INSERT INTO user_settings(user_id, key, value)
+        VALUES (?, 'theme', ?)
+        ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value
+        """,
+        (user_id, theme),
+    )
+    db().commit()
+    return jsonify({"theme": theme, "label": THEMES[theme]})
 
 
 @app.get("/api/media")
