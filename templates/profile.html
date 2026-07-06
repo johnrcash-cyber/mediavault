@@ -31,13 +31,11 @@
           <h2>Profile Image</h2>
           <p>Upload a PNG, JPG, or WebP image up to 5 MB.</p>
           {% if avatar_error %}<div class="auth-error" role="alert">{{ avatar_error }}</div>{% endif %}
-          <form class="avatar-upload-form" method="post" action="{{ url_for('profile') }}" enctype="multipart/form-data">
+          <div class="auth-error avatar-client-error" id="avatarClientError" role="alert" hidden></div>
+          <form class="avatar-upload-form" id="avatarUploadForm" method="post" action="{{ url_for('profile') }}" enctype="multipart/form-data">
             <input type="hidden" name="action" value="avatar">
-            <label class="avatar-file-input">
-              <span>Choose Image</span>
-              <input type="file" name="avatar" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" required>
-            </label>
-            <button class="button primary" type="submit">Upload Avatar</button>
+            <input class="avatar-file-input" id="avatarFileInput" type="file" name="avatar" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" required hidden>
+            <button class="button primary" id="changeAvatarButton" type="button">Change Avatar</button>
           </form>
         </div>
       </section>
@@ -98,6 +96,35 @@
         clearPasswordFields();
         window.setTimeout(clearPasswordFields, 100);
         window.setTimeout(clearPasswordFields, 500);
+
+        const avatarForm = document.querySelector("#avatarUploadForm");
+        const avatarInput = document.querySelector("#avatarFileInput");
+        const avatarButton = document.querySelector("#changeAvatarButton");
+        const avatarError = document.querySelector("#avatarClientError");
+        const validExtensions = new Set(["png", "jpg", "jpeg", "webp"]);
+        const maxAvatarBytes = 5 * 1024 * 1024;
+        avatarButton?.addEventListener("click", () => avatarInput?.click());
+        avatarInput?.addEventListener("change", () => {
+          const file = avatarInput.files?.[0];
+          if (!file) return;
+          const extension = file.name.split(".").pop()?.toLowerCase() || "";
+          let message = "";
+          if (!validExtensions.has(extension)) {
+            message = "Choose a PNG, JPG, JPEG, or WebP image.";
+          } else if (file.size > maxAvatarBytes) {
+            message = "Avatar images must be 5 MB or smaller.";
+          }
+          if (message) {
+            avatarError.textContent = message;
+            avatarError.hidden = false;
+            avatarInput.value = "";
+            return;
+          }
+          avatarError.hidden = true;
+          avatarButton.disabled = true;
+          avatarButton.textContent = "Uploading…";
+          avatarForm.requestSubmit();
+        });
       });
     })();
   </script>
