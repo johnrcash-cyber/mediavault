@@ -50,29 +50,27 @@ function card(item, options = {}) {
   const isWishlist = Boolean(options.wishlist);
   const wishlistStatus = isWishlist ? wishlistStatusDisplay(item) : null;
   const statusClass = item.status === "Archived" ? "archived" : "";
-  const providerClass = (item.metadata_provider || "").toLowerCase();
+  const primarySource = (item.sources || [])[0] || "";
+  const topBadge = primarySource || item.metadata_provider || "";
+  const providerClass = topBadge.toLowerCase();
   const detailBits = [
     item.year || "Year unknown",
     item.media_type,
     item.artist || "",
     item.runtime_minutes ? `${item.runtime_minutes} min` : "",
   ].filter(Boolean).join(" · ");
-  const sourceBadges = (item.sources || []).map((source) =>
-    `<span class="mini-badge source">${escapeHtml(source)}</span>`
-  ).join("");
   const summary = item.overview || item.notes || "";
   const enrichmentStatus = item.enrichment_status || item.metadata_status || "";
   return `<article class="media-card media-item-entry type-${escapeHtml(item.media_type)}${isWishlist ? " wishlist-card wishlist-item-entry" : ""}" ${isWishlist ? `data-wishlist-id="${item.id}"` : `data-id="${item.id}"`}>
     <div class="cover ${item.poster_url ? "has-poster" : ""}">
       ${item.poster_url ? `<img src="${escapeHtml(item.poster_url)}" alt="" loading="lazy">` : `<span class="cover-icon">${typeIcons[item.media_type] || "MV"}</span>`}
       ${isWishlist ? '<span class="wishlist-badge">♡ Wishlist</span>' : ""}
-      ${item.metadata_provider ? `<span class="provider-badge ${providerClass}">${escapeHtml(item.metadata_provider)}</span>` : ""}
+      ${topBadge ? `<span class="provider-badge ${providerClass}">${escapeHtml(topBadge)}</span>` : ""}
       ${item.format ? `<span class="format-badge">${escapeHtml(item.format)}</span>` : ""}
     </div>
     <div class="card-body"><h3 title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</h3>
       <p class="card-details">${escapeHtml(detailBits)}</p>
       ${summary ? `<p class="card-summary">${escapeHtml(summary)}</p>` : `<p class="card-summary empty">${enrichmentStatus === "Pending" ? "Metadata pending…" : enrichmentStatus === "Failed" ? "Metadata enrichment failed." : "Metadata not found."}</p>`}
-      ${sourceBadges ? `<div class="card-sources">${sourceBadges}</div>` : ""}
       ${isWishlist ? `<div class="card-meta wishlist-card-meta"><span class="wishlist-card-status ${wishlistStatus.status}">♡ Wishlist · ${escapeHtml(wishlistStatus.label)}</span><span>${escapeHtml(enrichmentStatus)}</span></div>` : ""}
       <div class="catalog-card-meta card-meta"><span class="status-pill ${statusClass}">${escapeHtml(item.status)}</span><span class="rating">${item.rating ? `★ ${Number(item.rating).toFixed(1)}` : escapeHtml(item.physical_location || item.condition || "")}</span></div>
     </div></article>`;
@@ -825,7 +823,6 @@ async function openQuickView(itemId) {
     fact("Tags", collector.tags),
   ].join("");
   const sourceLabels = [];
-  if (data.metadata_source) sourceLabels.push(`<span class="source-chip ${escapeHtml(data.metadata_source.provider)}">${escapeHtml(data.metadata_source.provider.toUpperCase())} Metadata</span>`);
   if (data.sources.jellyfin) sourceLabels.push('<span class="source-chip jellyfin">Jellyfin</span>');
   if (collector.media_type === "Music") sourceLabels.push(`<span class="source-chip physical">${escapeHtml(collector.format)}</span>`);
   if (data.sources.physical_media && collector.media_type !== "Music") sourceLabels.push('<span class="source-chip physical">Physical Media</span>');
