@@ -1173,6 +1173,48 @@ def jellyfin_item_source(raw: dict, library: sqlite3.Row) -> dict:
     return normalized
 
 
+def connected_source_image_url(
+    source_item_id: str, image_item_id: str, version: str = "",
+) -> str:
+    if not source_item_id or not image_item_id:
+        return ""
+    return (
+        f"/api/jellyfin/image/{urllib.parse.quote(image_item_id)}/Primary"
+        f"?source_item_id={urllib.parse.quote(source_item_id)}"
+        f"&v={urllib.parse.quote(version or 'source')}"
+    )
+
+
+def jellyfin_primary_image_info(
+    settings: dict, item_id: str,
+) -> tuple[bool, str, str]:
+    """Verify a primary image when Jellyfin omits image tags from an item DTO."""
+    try:
+        images = jellyfin_request(
+            settings, f"/Items/{urllib.parse.quote(item_id)}/Images"
+        )
+    except ValueError as exc:
+        return False, "", str(exc)
+    if not isinstance(images, list):
+        return False, "", "Jellyfin item-images response was not a list."
+    primary = next(
+        (
+            image for image in images
+            if str(image.get("ImageType", "")).casefold() == "primary"
+        ),
+        None,
+    )
+    if not primary:
+        return False, "", "Jellyfin reported no primary image for this item."
+    version = str(
+        primary.get("ImageTag")
+        or primary.get("Tag")
+        or primary.get("DateModified")
+        or ""
+    )
+    return True, version, ""
+
+
 def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
     user_id = user_id or active_user_id()
     settings = jellyfin_settings(user_id)
@@ -1228,6 +1270,29 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                 if not source["jellyfin_item_id"]:
                     continue
                 if category == "Music":
+                    if not source["has_poster"]:
+                        verified, image_version, image_error = (
+                            jellyfin_primary_image_info(
+                                settings, source["jellyfin_item_id"]
+                            )
+                        )
+                        if verified:
+                            source["has_poster"] = True
+                            source["poster_item_id"] = source["jellyfin_item_id"]
+                            source["poster_tag"] = image_version or now
+                            source["poster_source"] = "item-images"
+                            source["poster_url"] = connected_source_image_url(
+                                source["jellyfin_item_id"],
+                                source["jellyfin_item_id"],
+                                source["poster_tag"],
+                            )
+                        else:
+                            app.logger.warning(
+                                "Jellyfin music artwork verification failed "
+                                "source_item_id=%s title=%r reason=%s",
+                                source["jellyfin_item_id"], source["title"],
+                                image_error,
+                            )
                     app.logger.info(
                         "Jellyfin music artwork source_item_id=%s title=%r "
                         "item_type=%s has_artwork=%s image_item_id=%s "
@@ -1510,10 +1575,9 @@ def normalize_jellyfin_item(raw: dict, library: dict | None = None) -> dict:
             else ""
         ),
         "poster_url": (
-            f"/api/jellyfin/image/{urllib.parse.quote(primary_image_item_id)}/Primary"
-            f"?source_item_id={urllib.parse.quote(item_id)}"
-            f"&v={urllib.parse.quote(image_version)}"
-            if primary_image_item_id and has_primary_image else ""
+            connected_source_image_url(
+                item_id, primary_image_item_id, image_version
+            ) if primary_image_item_id and has_primary_image else ""
         ),
         "backdrop_url": (
             f"/api/jellyfin/image/{urllib.parse.quote(item_id)}/Backdrop"
