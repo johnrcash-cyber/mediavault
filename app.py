@@ -1910,16 +1910,11 @@ def cover_art_for_release(
         # Cover art is optional. In particular, Gunicorn can surface its
         # request-timeout interrupt as SystemExit while urllib is blocked in
         # an SSL read; that must not take down an otherwise useful release.
-        app.logger.warning(
+        app.logger.info(
             "Cover Art Archive lookup skipped release_id=%s error_type=%s "
             "error=%s",
             release_id, type(exc).__name__, exc,
         )
-        if warning_collector is not None:
-            warning_collector.append({
-                "provider": "Cover Art Archive",
-                "error": str(exc) or type(exc).__name__,
-            })
         return None
 
 
@@ -2529,15 +2524,10 @@ def current_jellyfin_metadata(
         )
         return metadata
     except (ValueError, json.JSONDecodeError) as exc:
-        app.logger.warning(
+        app.logger.info(
             "Jellyfin metadata fetch failed item_id=%s error=%s; using cached source data",
             source["jellyfin_item_id"], exc,
         )
-        if warning_collector is not None:
-            warning_collector.append({
-                "provider": "Jellyfin",
-                "error": f"{exc}; cached source data was used",
-            })
         return cached
 
 
@@ -2689,11 +2679,11 @@ def enrich_media_item(
                 break
             except ValueError as exc:
                 errors.append(f"{provider}: {exc}")
-                if warning_collector is not None:
-                    warning_collector.append({
-                        "provider": provider.title(),
-                        "error": str(exc),
-                    })
+                app.logger.info(
+                    "Metadata provider fallback item_id=%s provider=%s "
+                    "error=%s",
+                    item_id, provider, exc,
+                )
     elif item["media_type"] in ("Movies", "Television"):
         configured = provider_settings()
         order = (
@@ -2732,11 +2722,11 @@ def enrich_media_item(
                 break
             except ValueError as exc:
                 errors.append(f"{provider.upper()}: {exc}")
-                if warning_collector is not None:
-                    warning_collector.append({
-                        "provider": provider.upper(),
-                        "error": str(exc),
-                    })
+                app.logger.info(
+                    "Metadata provider fallback item_id=%s provider=%s "
+                    "error=%s",
+                    item_id, provider.upper(), exc,
+                )
     else:
         raise LookupError("Metadata enrichment is not available for this media type yet.")
 
@@ -3638,6 +3628,7 @@ def run_metadata_refresh_job(user_id: int) -> None:
                 "Metadata refresh job started user_id=%s item_count=%s",
                 user_id, len(items),
             )
+            warning_groups: dict[tuple[str, str, str], dict] = {}
             for item in items:
                 category = result["categories"][item["media_type"]]
                 # Count an item before any provider call so persisted progress
@@ -3689,23 +3680,50 @@ def run_metadata_refresh_job(user_id: int) -> None:
                         type(exc).__name__, exc, exc_info=True,
                     )
                 for warning in item_warnings:
-                    detail = {
-                        "id": item["id"], "title": item["title"],
-                        "media_type": item["media_type"],
-                        "provider": warning.get("provider", "Metadata provider"),
-                        "status": "warning",
-                        "error": warning.get("error", "Provider warning"),
-                    }
-                    result["warnings"] += 1
-                    category["warnings"] += 1
-                    if len(result["warning_details"]) < 50:
-                        result["warning_details"].append(detail)
-                    app.logger.warning(
-                        "Metadata refresh warning item_id=%s title=%r "
-                        "provider=%s error=%s",
-                        item["id"], item["title"], detail["provider"],
-                        detail["error"],
+                    if warning.get("fallback_used") or (
+                        warning.get("level") in ("debug", "info")
+                    ):
+                        continue
+                    provider = warning.get(
+                        "provider", "Metadata provider"
                     )
+                    error = warning.get("error", "Provider warning")
+                    group_key = (item["media_type"], provider, error)
+                    group = warning_groups.get(group_key)
+                    if group is None:
+                        group = {
+                            "id": item["id"],
+                            "title": item["title"],
+                            "media_type": item["media_type"],
+                            "provider": provider,
+                            "status": "warning",
+                            "error": error,
+                            "count": 0,
+                            "items": [],
+                        }
+                        warning_groups[group_key] = group
+                        result["warnings"] += 1
+                        category["warnings"] += 1
+                    group["count"] += 1
+                    if len(group["items"]) < 5:
+                        group["items"].append({
+                            "id": item["id"], "title": item["title"],
+                        })
+                    app.logger.warning(
+                        "Metadata refresh actionable warning item_id=%s "
+                        "title=%r provider=%s error=%s",
+                        item["id"], item["title"], provider, error,
+                    )
+                result["warning_details"] = [
+                    {
+                        **group,
+                        "error": (
+                            f"{group['error']} ({group['count']} items)"
+                            if group["count"] > 1 else group["error"]
+                        ),
+                    }
+                    for group in list(warning_groups.values())[:50]
+                ]
                 result["message"] = (
                     f"{result['processed']} of {result['total']} processed, "
                     f"{result['enriched']} enriched, "
