@@ -795,8 +795,8 @@ async function openQuickView(itemId) {
   $("#quickType").textContent = `${collector.media_type} · ${collector.format}`;
   $("#quickSubtitle").textContent = [metadata.year || collector.year, metadata.runtime_minutes ? `${metadata.runtime_minutes} min` : "", metadata.rating ? `★ ${Number(metadata.rating).toFixed(1)}` : ""].filter(Boolean).join("  ·  ");
   $("#quickOverview").textContent = metadata.overview || (collector.media_type === "Music"
-    ? "Album metadata is available through MusicBrainz. Choose Change Metadata Source to find the exact release."
-    : "No overview is available. Attach an OMDb or TMDB metadata provider to enrich this item.");
+    ? "No additional album overview is available."
+    : "No overview is available. Use Refresh Metadata to enrich this item.");
   $("#quickMetadataProvider").textContent = metadata.metadata_source || "Manual / none";
   $("#metadataGrid").innerHTML = [
     fact("Last refreshed", metadata.refreshed_at ? new Date(metadata.refreshed_at).toLocaleString() : ""),
@@ -833,8 +833,8 @@ async function openQuickView(itemId) {
   $("#refreshMetadata").disabled = !(
     data.metadata_source || ["Movies", "Music"].includes(collector.media_type)
   );
-  $("#changeMetadata").disabled = !["Movies", "Television", "Music"].includes(collector.media_type);
-  $("#removeMetadata").hidden = !data.metadata_source;
+  $("#changeMetadata").hidden = true;
+  $("#removeMetadata").hidden = true;
   $("#quickPoster").style.backgroundImage = metadata.poster_url ? `url("${metadata.poster_url}")` : "";
   $("#quickPoster").classList.toggle("has-image", Boolean(metadata.poster_url));
   const heroImage = metadata.backdrop_url || metadata.artist_image_url || "";
