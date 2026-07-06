@@ -1215,6 +1215,51 @@ def jellyfin_primary_image_info(
     return True, version, ""
 
 
+def find_catalog_match_for_source(
+    user_id: int, category: str, source: dict,
+) -> sqlite3.Row | None:
+    candidates = db().execute(
+        "SELECT id, title, year FROM media "
+        "WHERE owner_id = ? AND media_type = ?",
+        (user_id, category),
+    ).fetchall()
+    return next(
+        (
+            row for row in candidates
+            if normalized_title(row["title"]) == normalized_title(source["title"])
+            and (
+                not source["year"] or not row["year"]
+                or source["year"] == row["year"]
+            )
+        ),
+        None,
+    )
+
+
+def create_catalog_item_from_source(
+    user_id: int, category: str, source: dict, now: str,
+) -> int:
+    clean = clean_payload({
+        "title": source["title"],
+        "year": source["year"],
+        "media_type": category,
+        "format": "Digital",
+        "status": "Unassigned",
+        "condition": "Unknown",
+        "notes": "",
+        "tags": "",
+    })
+    columns = ", ".join(clean.keys())
+    placeholders = ", ".join("?" for _ in clean)
+    cursor = db().execute(
+        f"INSERT INTO media "
+        f"(owner_id, {columns}, created_at, updated_at) "
+        f"VALUES (?, {placeholders}, ?, ?)",
+        [user_id, *clean.values(), now, now],
+    )
+    return int(cursor.lastrowid)
+
+
 def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
     user_id = user_id or active_user_id()
     settings = jellyfin_settings(user_id)
@@ -1229,7 +1274,7 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
         (user_id, server_url),
     ).fetchall()
     result = {
-        "processed": 0, "added": 0, "updated": 0,
+        "processed": 0, "added": 0, "updated": 0, "restored": 0,
         "skipped": 0, "failed": 0, "libraries": [],
     }
     now = datetime.now(timezone.utc).isoformat()
@@ -1242,7 +1287,7 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
         library_result = {
             "id": library["library_id"], "name": library["name"],
             "category": category, "added": 0, "updated": 0,
-            "skipped": 0, "failed": 0,
+            "restored": 0, "skipped": 0, "failed": 0,
         }
         try:
             response = jellyfin_request(
@@ -1337,6 +1382,47 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                     (user_id, server_url, source["jellyfin_item_id"]),
                 ).fetchone()
                 if existing_source:
+                    existing_source = dict(existing_source)
+                    if existing_source["action"] == "ignored":
+                        result["skipped"] += 1
+                        library_result["skipped"] += 1
+                        continue
+                    linked_media = None
+                    if existing_source["media_id"] is not None:
+                        linked_media = db().execute(
+                            "SELECT id FROM media "
+                            "WHERE id = ? AND owner_id = ?",
+                            (existing_source["media_id"], user_id),
+                        ).fetchone()
+                    restored = linked_media is None
+                    if restored:
+                        match = find_catalog_match_for_source(
+                            user_id, category, source
+                        )
+                        media_id = match["id"] if match else (
+                            create_catalog_item_from_source(
+                                user_id, category, source, now
+                            )
+                        )
+                        restored_action = "attached" if match else "created"
+                        db().execute(
+                            "UPDATE jellyfin_sources "
+                            "SET media_id = ?, action = ? WHERE id = ?",
+                            (
+                                media_id, restored_action,
+                                existing_source["id"],
+                            ),
+                        )
+                        existing_source["media_id"] = media_id
+                        existing_source["action"] = restored_action
+                        result["restored"] += 1
+                        library_result["restored"] += 1
+                        app.logger.info(
+                            "Source reconciliation restored source_item_id=%s "
+                            "media_id=%s mode=%s",
+                            source["jellyfin_item_id"], media_id,
+                            "relinked" if match else "recreated",
+                        )
                     try:
                         cached_source = json.loads(
                             existing_source["metadata_json"] or "{}"
@@ -1383,13 +1469,15 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                                 existing_source["id"],
                             ),
                         )
-                        result["updated"] += 1
-                        library_result["updated"] += 1
-                        cache_action = "updated"
+                        if not restored:
+                            result["updated"] += 1
+                            library_result["updated"] += 1
+                        cache_action = "restored" if restored else "updated"
                     else:
-                        result["skipped"] += 1
-                        library_result["skipped"] += 1
-                        cache_action = "unchanged"
+                        if not restored:
+                            result["skipped"] += 1
+                            library_result["skipped"] += 1
+                        cache_action = "restored" if restored else "unchanged"
                     if category == "Music":
                         app.logger.info(
                             "Jellyfin music artwork cached source_item_id=%s "
@@ -1401,44 +1489,15 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                             source.get("poster_url") or "",
                         )
                     continue
-                candidates = db().execute(
-                    "SELECT id, title, year FROM media "
-                    "WHERE owner_id = ? AND media_type = ?",
-                    (user_id, category),
-                ).fetchall()
-                match = next(
-                    (
-                        row for row in candidates
-                        if normalized_title(row["title"]) == normalized_title(source["title"])
-                        and (
-                            not source["year"] or not row["year"]
-                            or source["year"] == row["year"]
-                        )
-                    ),
-                    None,
+                match = find_catalog_match_for_source(
+                    user_id, category, source
                 )
                 media_id = match["id"] if match else None
                 action = "attached"
                 if not media_id:
-                    clean = clean_payload({
-                        "title": source["title"],
-                        "year": source["year"],
-                        "media_type": category,
-                        "format": "Digital",
-                        "status": "Unassigned",
-                        "condition": "Unknown",
-                        "notes": "",
-                        "tags": "",
-                    })
-                    columns = ", ".join(clean.keys())
-                    placeholders = ", ".join("?" for _ in clean)
-                    cursor = db().execute(
-                        f"INSERT INTO media "
-                        f"(owner_id, {columns}, created_at, updated_at) "
-                        f"VALUES (?, {placeholders}, ?, ?)",
-                        [user_id, *clean.values(), now, now],
+                    media_id = create_catalog_item_from_source(
+                        user_id, category, source, now
                     )
-                    media_id = cursor.lastrowid
                     action = "created"
                     result["added"] += 1
                     library_result["added"] += 1
@@ -1473,10 +1532,12 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                         source["has_poster"], source.get("poster_url") or "",
                     )
             total = db().execute(
-                "SELECT COUNT(*) FROM jellyfin_sources "
-                "WHERE user_id = ? AND server_url = ? "
-                "AND jellyfin_library_id = ? "
-                "AND action IN ('attached', 'created')",
+                "SELECT COUNT(*) FROM jellyfin_sources js "
+                "JOIN media m ON m.id = js.media_id "
+                "WHERE js.user_id = ? AND js.server_url = ? "
+                "AND js.jellyfin_library_id = ? "
+                "AND js.action IN ('attached', 'created') "
+                "AND m.owner_id = js.user_id",
                 (user_id, server_url, library["library_id"]),
             ).fetchone()[0]
             db().execute(
@@ -5508,7 +5569,7 @@ def run_scheduled_library_sync(force: bool = False) -> dict:
     result = {
         "users_checked": len(users), "users_synced": 0,
         "users_skipped": 0, "processed": 0, "added": 0,
-        "updated": 0, "failed": 0,
+        "updated": 0, "restored": 0, "failed": 0,
     }
     for user in users:
         user_id = int(user["id"])
@@ -5536,7 +5597,7 @@ def run_scheduled_library_sync(force: bool = False) -> dict:
             )
             sync_result = sync_jellyfin_libraries(user_id)
             result["users_synced"] += 1
-            for key in ("processed", "added", "updated", "failed"):
+            for key in ("processed", "added", "updated", "restored", "failed"):
                 result[key] += int(sync_result.get(key, 0))
         except Exception as exc:
             result["failed"] += 1

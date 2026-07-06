@@ -664,7 +664,7 @@ async function loadJellyfinLibraries() {
     renderJellyfinLibraries(data.libraries || []);
     $("#jellyfinLastSync").textContent = `Last sync: ${data.last_sync ? new Date(data.last_sync).toLocaleString() : "Never"}`;
     $("#jellyfinLastResult").textContent = data.last_result
-      ? `${data.last_result.processed || 0} processed · ${data.last_result.added || 0} added · ${data.last_result.updated || 0} updated · ${data.last_result.skipped || 0} skipped · ${data.last_result.failed || 0} failed`
+      ? `${data.last_result.processed || 0} processed · ${data.last_result.added || 0} added · ${data.last_result.updated || 0} updated · ${data.last_result.restored || 0} restored · ${data.last_result.skipped || 0} skipped · ${data.last_result.failed || 0} failed`
       : "No sync results yet.";
   } catch (error) { $("#jellyfinError").textContent = error.message; }
 }
@@ -705,10 +705,10 @@ function renderJellyfinSyncStatus(result) {
   const libraryLines = (result.libraries || []).map((library) =>
     `<div><strong>${escapeHtml(library.name)}</strong><span>${library.imported_count || 0} imported${library.failed ? ` · ${library.failed} failed` : ""}</span></div>`
   ).join("");
-  $("#jellyfinSyncStatus").innerHTML = `<p><strong>Sync complete</strong><span>${result.processed || 0} processed · ${result.added || 0} added · ${result.updated || 0} updated · ${result.skipped || 0} skipped · ${result.failed || 0} failed</span></p>${libraryLines}`;
+  $("#jellyfinSyncStatus").innerHTML = `<p><strong>Sync complete</strong><span>${result.processed || 0} processed · ${result.added || 0} added · ${result.updated || 0} updated · ${result.restored || 0} restored · ${result.skipped || 0} skipped · ${result.failed || 0} failed</span></p>${libraryLines}`;
   $("#jellyfinSyncStatus").hidden = false;
   $("#jellyfinLastSync").textContent = `Last sync: ${new Date(result.last_sync).toLocaleString()}`;
-  $("#jellyfinLastResult").textContent = `${result.processed || 0} processed · ${result.added || 0} added · ${result.updated || 0} updated · ${result.skipped || 0} skipped · ${result.failed || 0} failed`;
+  $("#jellyfinLastResult").textContent = `${result.processed || 0} processed · ${result.added || 0} added · ${result.updated || 0} updated · ${result.restored || 0} restored · ${result.skipped || 0} skipped · ${result.failed || 0} failed`;
 }
 
 function jellyfinFormData() {
@@ -1631,7 +1631,7 @@ $("#refreshLibraryAction").addEventListener("click", async () => {
       credentials: "same-origin",
       body: "{}",
     });
-    toast(`${result.processed || 0} processed · ${result.added || 0} added · ${result.updated || 0} updated · ${result.skipped || 0} skipped · ${result.failed || 0} failed`, 6000);
+    toast(`${result.processed || 0} processed · ${result.added || 0} added · ${result.updated || 0} updated · ${result.restored || 0} restored · ${result.skipped || 0} skipped · ${result.failed || 0} failed`, 6000);
     await loadDashboard();
     if (state.view === "collection") await loadCollection();
     if (state.view === "settings") await loadSources();
