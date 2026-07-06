@@ -766,10 +766,11 @@ def row_to_card_dict(row: sqlite3.Row) -> dict:
         source_metadata = json.loads(raw_source_metadata or "{}")
     except json.JSONDecodeError:
         source_metadata = {}
-    # Collector-owned title/year remain authoritative. Source metadata is the
-    # first enrichment fallback; external providers fill only its gaps.
+    # Connected-source metadata is authoritative for the displayed media
+    # identity. External providers fill only source gaps.
     metadata = fill_metadata_gaps(source_metadata, external_metadata)
-    item["year"] = item["year"] or metadata.get("year")
+    item["title"] = metadata.get("title") or item["title"]
+    item["year"] = metadata.get("year") or item["year"]
     item["poster_url"] = metadata.get("poster_url") or ""
     item["overview"] = metadata.get("overview") or ""
     item["runtime_minutes"] = metadata.get("runtime_minutes")
@@ -3600,7 +3601,10 @@ def jellyfin_image(item_id: str, image_type: str):
                 content_type=response.headers.get_content_type(),
                 headers={"Cache-Control": "private, max-age=3600"},
             )
-    except (ValueError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+    except (
+        ValueError, urllib.error.URLError, urllib.error.HTTPError,
+        TimeoutError, OSError,
+    ) as exc:
         source = db().execute(
             "SELECT metadata_json FROM jellyfin_sources "
             "WHERE user_id = ? AND jellyfin_item_id = ? "
