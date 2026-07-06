@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -164,6 +164,29 @@ def init_db() -> None:
             value TEXT NOT NULL,
             PRIMARY KEY(user_id, key),
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scheduled_jobs (
+            job_name TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            interval_key TEXT NOT NULL,
+            last_run_at TEXT,
+            next_run_at TEXT,
+            last_status TEXT NOT NULL DEFAULT 'Never run',
+            last_message TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS background_job_leases (
+            job_key TEXT PRIMARY KEY,
+            owner_token TEXT NOT NULL,
+            lease_until TEXT NOT NULL
         )
         """
     )
@@ -527,6 +550,21 @@ def init_db() -> None:
         )
         connection.execute("DROP TABLE metadata_attachments_legacy")
     migration_now = datetime.now(timezone.utc).isoformat()
+    schedule_defaults = (
+        ("library_sync", 1, "minute"),
+        ("metadata_refresh", 1, "daily"),
+    )
+    for job_name, enabled, interval_key in schedule_defaults:
+        connection.execute(
+            """
+            INSERT INTO scheduled_jobs (
+                job_name, enabled, interval_key, next_run_at,
+                last_status, updated_at
+            ) VALUES (?, ?, ?, ?, 'Never run', ?)
+            ON CONFLICT(job_name) DO NOTHING
+            """,
+            (job_name, enabled, interval_key, migration_now, migration_now),
+        )
     connection.execute(
         "UPDATE wishlist_items SET status = 'Open' "
         "WHERE status IS NULL OR status = ''"
@@ -2846,6 +2884,109 @@ def administration_metadata_providers():
     return render_template("admin_metadata_providers.html", user=user)
 
 
+def scheduled_job_dict(row: sqlite3.Row) -> dict:
+    return {
+        "job_name": row["job_name"],
+        "label": (
+            "Library Sync"
+            if row["job_name"] == "library_sync"
+            else "Metadata Refresh"
+        ),
+        "enabled": bool(row["enabled"]),
+        "interval": row["interval_key"],
+        "last_run_at": row["last_run_at"],
+        "next_run_at": row["next_run_at"],
+        "last_status": row["last_status"],
+        "last_message": row["last_message"] or "No result recorded yet.",
+        "interval_options": list(
+            SCHEDULE_INTERVAL_OPTIONS.get(row["job_name"], ())
+        ),
+    }
+
+
+@app.get("/api/administration/scheduled-jobs")
+def administration_scheduled_jobs():
+    if not require_admin():
+        return jsonify({"error": "Administrator access required."}), 403
+    rows = db().execute(
+        "SELECT * FROM scheduled_jobs ORDER BY job_name"
+    ).fetchall()
+    return jsonify({"jobs": [scheduled_job_dict(row) for row in rows]})
+
+
+@app.put("/api/administration/scheduled-jobs/<job_name>")
+def administration_update_scheduled_job(job_name: str):
+    if not require_admin():
+        return jsonify({"error": "Administrator access required."}), 403
+    if job_name not in SCHEDULE_INTERVAL_OPTIONS:
+        return jsonify({"error": "Scheduled job not found."}), 404
+    payload = request.get_json(silent=True) or {}
+    interval_key = str(payload.get("interval", ""))
+    if interval_key not in SCHEDULE_INTERVAL_OPTIONS[job_name]:
+        return jsonify({"error": "Choose a valid interval."}), 400
+    enabled = bool(payload.get("enabled"))
+    now = datetime.now(timezone.utc)
+    next_run = (
+        now + timedelta(seconds=SCHEDULE_INTERVAL_SECONDS[interval_key])
+        if enabled else None
+    )
+    db().execute(
+        """
+        UPDATE scheduled_jobs
+        SET enabled = ?, interval_key = ?, next_run_at = ?,
+            updated_at = ?
+        WHERE job_name = ?
+        """,
+        (
+            1 if enabled else 0, interval_key,
+            next_run.isoformat() if next_run else None,
+            now.isoformat(), job_name,
+        ),
+    )
+    db().commit()
+    row = db().execute(
+        "SELECT * FROM scheduled_jobs WHERE job_name = ?", (job_name,)
+    ).fetchone()
+    app.logger.info(
+        "Scheduled job configuration updated job=%s enabled=%s interval=%s",
+        job_name, enabled, interval_key,
+    )
+    return jsonify({"job": scheduled_job_dict(row)})
+
+
+@app.post("/api/administration/scheduled-jobs/<job_name>/run")
+def administration_run_scheduled_job(job_name: str):
+    if not require_admin():
+        return jsonify({"error": "Administrator access required."}), 403
+    if job_name not in SCHEDULE_INTERVAL_OPTIONS:
+        return jsonify({"error": "Scheduled job not found."}), 404
+    token = acquire_job_lease(
+        f"schedule:{job_name}",
+        21600 if job_name == "metadata_refresh" else 3600,
+    )
+    if not token:
+        app.logger.info(
+            "Manual scheduled job skipped job=%s reason=already_running",
+            job_name,
+        )
+        return jsonify({"error": "This job is already running."}), 409
+    now = datetime.now(timezone.utc).isoformat()
+    db().execute(
+        "UPDATE scheduled_jobs SET last_status = 'Running', "
+        "last_message = 'Manual run in progress.', updated_at = ? "
+        "WHERE job_name = ?",
+        (now, job_name),
+    )
+    db().commit()
+    threading.Thread(
+        target=execute_scheduled_job,
+        args=(job_name, token, True),
+        name=f"manual-{job_name}",
+        daemon=True,
+    ).start()
+    return jsonify({"started": True}), 202
+
+
 @app.put("/api/administration/users/<int:user_id>")
 def administration_update_user(user_id: int):
     admin = require_admin()
@@ -3292,14 +3433,27 @@ def run_metadata_refresh_job(user_id: int) -> None:
             _metadata_refresh_active_users.discard(user_id)
 
 
+def run_metadata_refresh_with_lease(
+    user_id: int, lease_key: str, lease_token: str
+) -> None:
+    try:
+        run_metadata_refresh_job(user_id)
+    finally:
+        with app.app_context():
+            release_job_lease(lease_key, lease_token)
+
+
 @app.post("/api/metadata/refresh-all")
 def refresh_all_metadata():
     user_id = active_user_id()
-    current = metadata_refresh_state(user_id)
-    if current and current.get("status") == "running":
-        return jsonify(current), 202
+    lease_key = f"metadata_refresh:{user_id}"
+    lease = acquire_job_lease(lease_key, 21600)
+    if not lease:
+        current = metadata_refresh_state(user_id)
+        return jsonify(current or new_metadata_refresh_result(0)), 202
     with _metadata_refresh_lock:
         if user_id in _metadata_refresh_active_users:
+            release_job_lease(lease_key, lease)
             current = metadata_refresh_state(user_id)
             return jsonify(current or new_metadata_refresh_result(0)), 202
         _metadata_refresh_active_users.add(user_id)
@@ -3312,8 +3466,8 @@ def refresh_all_metadata():
     )
     store_metadata_refresh_state(user_id, initial)
     threading.Thread(
-        target=run_metadata_refresh_job,
-        args=(user_id,),
+        target=run_metadata_refresh_with_lease,
+        args=(user_id, lease_key, lease),
         name=f"metadata-refresh-{user_id}",
         daemon=True,
     ).start()
@@ -4555,10 +4709,21 @@ def refresh_jellyfin_libraries():
     user_id = active_user_id()
     try:
         libraries = discover_jellyfin_libraries(user_id)
-        sync_result = (
-            sync_jellyfin_libraries(user_id)
-            if auto_sync_enabled(user_id) else None
-        )
+        sync_result = None
+        if auto_sync_enabled(user_id):
+            lease_key = f"library_sync:{user_id}"
+            lease = acquire_job_lease(lease_key, 1800)
+            if lease:
+                try:
+                    sync_result = sync_jellyfin_libraries(user_id)
+                finally:
+                    release_job_lease(lease_key, lease)
+            else:
+                app.logger.info(
+                    "Refresh Libraries sync skipped user_id=%s "
+                    "reason=already_running",
+                    user_id,
+                )
         if sync_result:
             server_url = normalize_server_url(jellyfin_settings()["server_url"])
             rows = db().execute(
@@ -4663,6 +4828,16 @@ def sync_selected_jellyfin_libraries():
         )
         return jsonify(result)
 
+    lease_key = f"library_sync:{user_id}"
+    lease = acquire_job_lease(lease_key, 1800)
+    if not lease:
+        app.logger.info(
+            "Library refresh skipped user_id=%s reason=already_running",
+            user_id,
+        )
+        return jsonify({
+            "error": "Library sync is already running for this account."
+        }), 409
     try:
         result = sync_jellyfin_libraries(user_id)
         refreshed_item_count = result.get("added", 0) + result.get("updated", 0)
@@ -4688,13 +4863,22 @@ def sync_selected_jellyfin_libraries():
         return jsonify({
             "error": "Library refresh failed. Check server logs."
         }), 500
+    finally:
+        release_job_lease(lease_key, lease)
 
 
 @app.post("/api/jellyfin/full-refresh")
 def full_refresh_jellyfin():
+    user_id = active_user_id()
+    lease_key = f"library_sync:{user_id}"
+    lease = acquire_job_lease(lease_key, 1800)
+    if not lease:
+        return jsonify({
+            "error": "Library sync is already running for this account."
+        }), 409
     try:
         discover_jellyfin_libraries()
-        sync_result = sync_jellyfin_libraries()
+        sync_result = sync_jellyfin_libraries(user_id)
         metadata_result = refresh_all_metadata().get_json()
         return jsonify({
             "sync": sync_result,
@@ -4703,6 +4887,8 @@ def full_refresh_jellyfin():
         })
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+    finally:
+        release_job_lease(lease_key, lease)
 
 
 @app.post("/api/sources/jellyfin/disable")
@@ -4917,58 +5103,330 @@ def jellyfin_import_action():
     return jsonify({"action": stored_action, "media_id": media_id})
 
 
-_auto_sync_lock = threading.Lock()
-_startup_sync_scheduled_users: set[int] = set()
+SCHEDULE_INTERVAL_SECONDS = {
+    "minute": 60,
+    "five_minutes": 300,
+    "fifteen_minutes": 900,
+    "hourly": 3600,
+    "six_hours": 21600,
+    "daily": 86400,
+    "weekly": 604800,
+}
+SOURCE_FREQUENCY_SECONDS = {
+    "hourly": 3600,
+    "six_hours": 21600,
+    "daily": 86400,
+    "weekly": 604800,
+}
+SCHEDULE_INTERVAL_OPTIONS = {
+    "library_sync": ("minute", "five_minutes", "fifteen_minutes", "hourly"),
+    "metadata_refresh": ("hourly", "six_hours", "daily", "weekly"),
+}
+SCHEDULER_STARTED_AT = datetime.now(timezone.utc)
 
 
-def run_scheduled_sync(user_id: int) -> None:
-    if not _auto_sync_lock.acquire(blocking=False):
-        return
+def parse_utc_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
     try:
-        with app.app_context():
-            sync_jellyfin_libraries(user_id)
-    except Exception:
-        app.logger.exception("Scheduled Jellyfin sync failed")
-    finally:
-        _auto_sync_lock.release()
-
-
-@app.before_request
-def schedule_auto_sync_if_due():
-    user = current_user()
-    if request.path.startswith("/static/") or not user:
+        parsed = datetime.fromisoformat(value)
+        return (
+            parsed.replace(tzinfo=timezone.utc)
+            if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+        )
+    except (TypeError, ValueError):
         return None
-    user_id = int(user["id"])
+
+
+def acquire_job_lease(job_key: str, lease_seconds: int) -> str | None:
+    token = uuid.uuid4().hex
+    now = datetime.now(timezone.utc)
+    lease_until = (now + timedelta(seconds=lease_seconds)).isoformat()
+    cursor = db().execute(
+        """
+        INSERT INTO background_job_leases(job_key, owner_token, lease_until)
+        VALUES (?, ?, ?)
+        ON CONFLICT(job_key) DO UPDATE SET
+            owner_token = excluded.owner_token,
+            lease_until = excluded.lease_until
+        WHERE background_job_leases.lease_until <= ?
+        """,
+        (job_key, token, lease_until, now.isoformat()),
+    )
+    db().commit()
+    return token if cursor.rowcount else None
+
+
+def release_job_lease(job_key: str, token: str) -> None:
+    db().execute(
+        "DELETE FROM background_job_leases "
+        "WHERE job_key = ? AND owner_token = ?",
+        (job_key, token),
+    )
+    db().commit()
+
+
+def source_sync_due(user_id: int, now: datetime) -> bool:
     if not auto_sync_enabled(user_id):
-        return None
+        return False
     frequency = auto_sync_frequency(user_id)
     if frequency == "manual":
-        return None
+        return False
     summary = last_sync_summary(user_id)
-    last_sync = None
-    if summary and summary.get("last_sync"):
-        try:
-            last_sync = datetime.fromisoformat(summary["last_sync"])
-        except (TypeError, ValueError):
-            pass
-    now = datetime.now(timezone.utc)
-    intervals = {
-        "hourly": 3600, "six_hours": 21600,
-        "daily": 86400, "weekly": 604800,
-    }
-    due = False
+    last_sync = parse_utc_datetime(
+        summary.get("last_sync") if summary else None
+    )
     if frequency == "startup":
-        due = user_id not in _startup_sync_scheduled_users
-        _startup_sync_scheduled_users.add(user_id)
-    elif not last_sync:
-        due = True
-    else:
-        due = (now - last_sync).total_seconds() >= intervals.get(frequency, 86400)
-    if due and not _auto_sync_lock.locked():
+        return last_sync is None or last_sync < SCHEDULER_STARTED_AT
+    if last_sync is None:
+        return True
+    return (now - last_sync).total_seconds() >= SOURCE_FREQUENCY_SECONDS.get(
+        frequency, 86400
+    )
+
+
+def run_scheduled_library_sync(force: bool = False) -> dict:
+    now = datetime.now(timezone.utc)
+    users = db().execute(
+        "SELECT id, email FROM users WHERE active = 1 ORDER BY id"
+    ).fetchall()
+    result = {
+        "users_checked": len(users), "users_synced": 0,
+        "users_skipped": 0, "processed": 0, "added": 0,
+        "updated": 0, "failed": 0,
+    }
+    for user in users:
+        user_id = int(user["id"])
+        settings = jellyfin_settings(user_id)
+        if (
+            not settings["server_url"]
+            or not settings["api_key"]
+            or (not force and not source_sync_due(user_id, now))
+        ):
+            result["users_skipped"] += 1
+            continue
+        lease_key = f"library_sync:{user_id}"
+        lease = acquire_job_lease(lease_key, 1800)
+        if not lease:
+            result["users_skipped"] += 1
+            app.logger.info(
+                "Scheduled Library Sync skipped user_id=%s reason=already_running",
+                user_id,
+            )
+            continue
+        try:
+            app.logger.info(
+                "Scheduled Library Sync user start user_id=%s email=%s",
+                user_id, user["email"],
+            )
+            sync_result = sync_jellyfin_libraries(user_id)
+            result["users_synced"] += 1
+            for key in ("processed", "added", "updated", "failed"):
+                result[key] += int(sync_result.get(key, 0))
+        except Exception as exc:
+            result["failed"] += 1
+            app.logger.exception(
+                "Scheduled Library Sync user failed user_id=%s error=%s",
+                user_id, exc,
+            )
+        finally:
+            release_job_lease(lease_key, lease)
+    return result
+
+
+def run_scheduled_metadata_refresh() -> dict:
+    users = db().execute(
+        """
+        SELECT u.id, u.email, COUNT(m.id) AS item_count
+        FROM users u
+        LEFT JOIN media m ON m.owner_id = u.id
+            AND m.media_type IN ('Movies', 'Television', 'Music')
+        WHERE u.active = 1
+        GROUP BY u.id, u.email
+        HAVING COUNT(m.id) > 0
+        ORDER BY u.id
+        """
+    ).fetchall()
+    result = {
+        "users_checked": len(users), "users_refreshed": 0,
+        "users_skipped": 0, "processed": 0, "enriched": 0,
+        "skipped": 0, "failed": 0, "warnings": 0,
+    }
+    for user in users:
+        user_id = int(user["id"])
+        lease_key = f"metadata_refresh:{user_id}"
+        lease = acquire_job_lease(lease_key, 21600)
+        if not lease:
+            result["users_skipped"] += 1
+            app.logger.info(
+                "Scheduled Metadata Refresh skipped user_id=%s "
+                "reason=already_running",
+                user_id,
+            )
+            continue
+        try:
+            with _metadata_refresh_lock:
+                _metadata_refresh_active_users.add(user_id)
+            app.logger.info(
+                "Scheduled Metadata Refresh user start user_id=%s email=%s",
+                user_id, user["email"],
+            )
+            run_metadata_refresh_job(user_id)
+            state = metadata_refresh_state(user_id) or {}
+            result["users_refreshed"] += 1
+            for key in (
+                "processed", "enriched", "skipped", "failed", "warnings"
+            ):
+                result[key] += int(state.get(key, 0))
+        finally:
+            release_job_lease(lease_key, lease)
+    return result
+
+
+def scheduled_job_message(job_name: str, result: dict) -> str:
+    if job_name == "library_sync":
+        return (
+            f"{result['users_synced']} user vaults synced, "
+            f"{result['processed']} items processed, "
+            f"{result['added']} added, {result['updated']} updated, "
+            f"{result['failed']} failed."
+        )
+    return (
+        f"{result['users_refreshed']} user vaults refreshed, "
+        f"{result['processed']} items processed, "
+        f"{result['enriched']} enriched, {result['skipped']} skipped, "
+        f"{result['failed']} failed, {result['warnings']} warnings."
+    )
+
+
+def execute_scheduled_job(
+    job_name: str, schedule_token: str, force: bool = False
+) -> None:
+    try:
+        with app.app_context():
+            app.logger.info("Scheduled job start job=%s", job_name)
+            result = (
+                run_scheduled_library_sync(force=force)
+                if job_name == "library_sync"
+                else run_scheduled_metadata_refresh()
+            )
+            message = scheduled_job_message(job_name, result)
+            status = (
+                "Completed with warnings"
+                if result.get("failed") or result.get("warnings")
+                else "Completed"
+            )
+            row = db().execute(
+                "SELECT interval_key FROM scheduled_jobs WHERE job_name = ?",
+                (job_name,),
+            ).fetchone()
+            interval_key = row["interval_key"] if row else "daily"
+            completed = datetime.now(timezone.utc)
+            next_run = completed + timedelta(
+                seconds=SCHEDULE_INTERVAL_SECONDS.get(interval_key, 86400)
+            )
+            db().execute(
+                """
+                UPDATE scheduled_jobs
+                SET last_run_at = ?, next_run_at = ?, last_status = ?,
+                    last_message = ?, updated_at = ?
+                WHERE job_name = ?
+                """,
+                (
+                    completed.isoformat(), next_run.isoformat(), status,
+                    message, completed.isoformat(), job_name,
+                ),
+            )
+            db().commit()
+            app.logger.info(
+                "Scheduled job complete job=%s status=%s result=%s",
+                job_name, status, message,
+            )
+    except (Exception, SystemExit) as exc:
+        with app.app_context():
+            now = datetime.now(timezone.utc)
+            row = db().execute(
+                "SELECT interval_key FROM scheduled_jobs WHERE job_name = ?",
+                (job_name,),
+            ).fetchone()
+            interval_key = row["interval_key"] if row else "daily"
+            db().execute(
+                """
+                UPDATE scheduled_jobs
+                SET last_run_at = ?, next_run_at = ?, last_status = 'Failed',
+                    last_message = ?, updated_at = ?
+                WHERE job_name = ?
+                """,
+                (
+                    now.isoformat(),
+                    (now + timedelta(
+                        seconds=SCHEDULE_INTERVAL_SECONDS.get(
+                            interval_key, 86400
+                        )
+                    )).isoformat(),
+                    str(exc) or type(exc).__name__,
+                    now.isoformat(), job_name,
+                ),
+            )
+            db().commit()
+            app.logger.error(
+                "Scheduled job failed job=%s error_type=%s error=%s",
+                job_name, type(exc).__name__, exc, exc_info=True,
+            )
+    finally:
+        with app.app_context():
+            release_job_lease(f"schedule:{job_name}", schedule_token)
+
+
+def start_due_scheduled_jobs() -> None:
+    now = datetime.now(timezone.utc)
+    rows = db().execute(
+        "SELECT * FROM scheduled_jobs ORDER BY job_name"
+    ).fetchall()
+    for row in rows:
+        job_name = row["job_name"]
+        if not row["enabled"]:
+            app.logger.debug(
+                "Scheduled job skipped job=%s reason=disabled", job_name
+            )
+            continue
+        next_run = parse_utc_datetime(row["next_run_at"])
+        if next_run and next_run > now:
+            continue
+        token = acquire_job_lease(
+            f"schedule:{job_name}",
+            21600 if job_name == "metadata_refresh" else 3600,
+        )
+        if not token:
+            app.logger.info(
+                "Scheduled job skipped job=%s reason=already_running",
+                job_name,
+            )
+            continue
+        db().execute(
+            "UPDATE scheduled_jobs SET last_status = 'Running', "
+            "last_message = 'Scheduled run in progress.', updated_at = ? "
+            "WHERE job_name = ?",
+            (now.isoformat(), job_name),
+        )
+        db().commit()
         threading.Thread(
-            target=run_scheduled_sync, args=(user_id,), daemon=True
+            target=execute_scheduled_job,
+            args=(job_name, token),
+            name=f"scheduled-{job_name}",
+            daemon=True,
         ).start()
-    return None
+
+
+def scheduler_loop() -> None:
+    app.logger.info("Scheduled refresh coordinator started")
+    while True:
+        try:
+            with app.app_context():
+                start_due_scheduled_jobs()
+        except Exception:
+            app.logger.exception("Scheduled refresh coordinator tick failed")
+        threading.Event().wait(30)
 
 
 init_db()
@@ -4977,6 +5435,12 @@ if os.environ.get("MEDIAVAULT_DISABLE_STARTUP_CHECKS") != "1":
     threading.Thread(
         target=run_source_health_checks,
         name="mediavault-source-health",
+        daemon=True,
+    ).start()
+if os.environ.get("MEDIAVAULT_DISABLE_SCHEDULER") != "1":
+    threading.Thread(
+        target=scheduler_loop,
+        name="mediavault-scheduler",
         daemon=True,
     ).start()
 

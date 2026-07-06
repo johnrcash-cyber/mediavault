@@ -109,3 +109,118 @@ form.addEventListener("submit", async (event) => {
     if (managedRow) submit.textContent = "Save Account";
   }
 });
+
+const intervalLabels = {
+  minute: "Every minute",
+  five_minutes: "Every 5 minutes",
+  fifteen_minutes: "Every 15 minutes",
+  hourly: "Every hour",
+  six_hours: "Every 6 hours",
+  daily: "Daily",
+  weekly: "Weekly",
+};
+
+function escapeHtml(value = "") {
+  const element = document.createElement("div");
+  element.textContent = value;
+  return element.innerHTML;
+}
+
+async function adminApi(url, options = {}) {
+  const response = await fetch(url, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Request failed.");
+  return data;
+}
+
+function formatJobTime(value) {
+  return value ? new Date(value).toLocaleString() : "Not scheduled";
+}
+
+function renderScheduledJobs(jobs) {
+  $("#scheduledJobGrid").innerHTML = jobs.map((job) => {
+    const statusClass = job.last_status.toLowerCase().replaceAll(" ", "-");
+    const description = job.job_name === "library_sync"
+      ? "Checks each user's enabled source schedule. Source-specific frequencies remain authoritative."
+      : "Enriches Movies, Television, and Music for every active user vault.";
+    return `<article class="scheduled-job-card" data-job-name="${escapeHtml(job.job_name)}">
+      <div class="scheduled-job-title">
+        <h3>${escapeHtml(job.label)}</h3>
+        <span class="job-status ${escapeHtml(statusClass)}">${escapeHtml(job.last_status)}</span>
+      </div>
+      <p class="scheduled-job-description">${escapeHtml(description)}</p>
+      <div class="scheduled-job-controls">
+        <label class="toggle-label"><input class="job-enabled" type="checkbox" ${job.enabled ? "checked" : ""}> Enabled</label>
+        <label>Interval<select class="job-interval">${job.interval_options.map((value) =>
+          `<option value="${escapeHtml(value)}" ${job.interval === value ? "selected" : ""}>${escapeHtml(intervalLabels[value] || value)}</option>`
+        ).join("")}</select></label>
+      </div>
+      <div class="scheduled-job-times">
+        <span><small>LAST RUN</small><strong>${escapeHtml(formatJobTime(job.last_run_at))}</strong></span>
+        <span><small>NEXT RUN</small><strong>${escapeHtml(job.enabled ? formatJobTime(job.next_run_at) : "Disabled")}</strong></span>
+      </div>
+      <p class="scheduled-job-message">${escapeHtml(job.last_message)}</p>
+      <div class="scheduled-job-actions">
+        <button class="button secondary save-job-schedule" type="button">Save Schedule</button>
+        <button class="button primary run-scheduled-job" type="button" ${job.last_status === "Running" ? "disabled" : ""}>Run Now</button>
+      </div>
+    </article>`;
+  }).join("");
+}
+
+async function loadScheduledJobs() {
+  const data = await adminApi("/api/administration/scheduled-jobs");
+  renderScheduledJobs(data.jobs || []);
+  if ((data.jobs || []).some((job) => job.last_status === "Running")) {
+    clearTimeout(loadScheduledJobs.timer);
+    loadScheduledJobs.timer = setTimeout(loadScheduledJobs, 2000);
+  }
+}
+
+$("#scheduledJobGrid").addEventListener("click", async (event) => {
+  const card = event.target.closest(".scheduled-job-card");
+  if (!card) return;
+  const jobName = card.dataset.jobName;
+  const button = event.target.closest("button");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    if (button.classList.contains("save-job-schedule")) {
+      await adminApi(`/api/administration/scheduled-jobs/${jobName}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          enabled: card.querySelector(".job-enabled").checked,
+          interval: card.querySelector(".job-interval").value,
+        }),
+      });
+      showToast("Schedule saved.");
+    } else if (button.classList.contains("run-scheduled-job")) {
+      await adminApi(`/api/administration/scheduled-jobs/${jobName}/run`, {
+        method: "POST",
+        body: "{}",
+      });
+      showToast(`${card.querySelector("h3").textContent} started.`);
+    }
+    await loadScheduledJobs();
+  } catch (error) {
+    showToast(error.message);
+    button.disabled = false;
+  }
+});
+
+$("#refreshScheduledJobs").addEventListener("click", async () => {
+  const button = $("#refreshScheduledJobs");
+  button.disabled = true;
+  try {
+    await loadScheduledJobs();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+loadScheduledJobs().catch((error) => showToast(error.message));

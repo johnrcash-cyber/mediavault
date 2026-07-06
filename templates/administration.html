@@ -52,8 +52,16 @@
       <div class="placeholder-list">
         <div><strong>System</strong><small>Platform-wide configuration and provider availability.</small></div>
         <a class="admin-destination" href="{{ url_for('administration_metadata_providers') }}"><strong>Metadata Providers</strong><small>Provider health, API credentials, priority, and library enrichment.</small><span>Open →</span></a>
-        <div><strong>Jobs / Logs</strong><small>Background job and operational logs will live here.</small></div>
       </div>
+      <section class="scheduled-jobs-section">
+        <div class="scheduled-jobs-head">
+          <div><p class="eyebrow">AUTOMATION</p><h2>Scheduled Jobs</h2><p>Library Sync scans enabled sources. Metadata Refresh enriches existing catalog records.</p></div>
+          <button class="button secondary" type="button" id="refreshScheduledJobs">Refresh Status</button>
+        </div>
+        <div class="scheduled-job-grid" id="scheduledJobGrid">
+          <p class="scheduled-jobs-loading">Loading scheduled jobsâ€¦</p>
+        </div>
+      </section>
     </section>
   </main>
   <div id="toast" class="toast" role="status"></div>
