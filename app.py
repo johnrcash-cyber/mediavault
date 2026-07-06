@@ -1210,12 +1210,14 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                     "ParentId": library["library_id"],
                     "IncludeItemTypes": include_type,
                     "Recursive": "true",
+                    "EnableImages": "true",
+                    "ImageTypeLimit": 1,
                     "Fields": "Overview,Genres,RunTimeTicks,CommunityRating,"
                               "People,Studios,PremiereDate,ProviderIds,Path,"
                               "ImageTags,BackdropImageTags,Album,AlbumArtist,"
                               "Artists,ChildCount,PrimaryImageItemId,"
                               "ParentPrimaryImageItemId,AlbumId,"
-                              "AlbumPrimaryImageTag,"
+                              "AlbumPrimaryImageTag,ParentPrimaryImageTag,"
                               "DateCreated,DateLastSaved,"
                               "DateLastRefreshed",
                 },
@@ -1244,6 +1246,7 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                         or raw.get("PrimaryImageItemId")
                         or raw.get("ParentPrimaryImageItemId")
                         or raw.get("AlbumPrimaryImageTag")
+                        or raw.get("ParentPrimaryImageTag")
                     )
                     if artwork_reported and not source.get("poster_url"):
                         app.logger.warning(
@@ -1258,6 +1261,8 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                                 "AlbumId": raw.get("AlbumId"),
                                 "AlbumPrimaryImageTag":
                                     raw.get("AlbumPrimaryImageTag"),
+                                "ParentPrimaryImageTag":
+                                    raw.get("ParentPrimaryImageTag"),
                             },
                         )
                 existing_source = db().execute(
@@ -1286,7 +1291,7 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                         and metadata_value_present(cached_source.get("title"))
                     ):
                         source["title"] = ""
-                    source = fill_metadata_gaps(source, cached_source)
+                    source = merge_source_snapshot(source, cached_source)
                     source_json = json.dumps(source, separators=(",", ":"))
                     changed = (
                         existing_source["source_title"] != source["title"]
@@ -1447,6 +1452,11 @@ def normalize_jellyfin_item(raw: dict, library: dict | None = None) -> dict:
     image_tags = raw.get("ImageTags") or {}
     album_id = str(raw.get("AlbumId") or "")
     album_primary_image_tag = raw.get("AlbumPrimaryImageTag")
+    primary_image_tag = (
+        image_tags.get("Primary")
+        or album_primary_image_tag
+        or raw.get("ParentPrimaryImageTag")
+    )
     inherited_image_item_id = (
         raw.get("PrimaryImageItemId")
         or raw.get("ParentPrimaryImageItemId")
@@ -1454,10 +1464,16 @@ def normalize_jellyfin_item(raw: dict, library: dict | None = None) -> dict:
     )
     primary_image_item_id = str(inherited_image_item_id or item_id)
     has_primary_image = bool(
-        image_tags.get("Primary")
+        primary_image_tag
         or raw.get("PrimaryImageItemId")
         or raw.get("ParentPrimaryImageItemId")
-        or album_primary_image_tag
+    )
+    image_version = str(
+        primary_image_tag
+        or raw.get("DateLastRefreshed")
+        or raw.get("DateLastSaved")
+        or raw.get("DateCreated")
+        or ""
     )
     artists = raw.get("Artists") or []
     artist = raw.get("AlbumArtist") or ", ".join(artists)
@@ -1486,6 +1502,7 @@ def normalize_jellyfin_item(raw: dict, library: dict | None = None) -> dict:
         "has_poster": has_primary_image,
         "has_backdrop": bool(raw.get("BackdropImageTags")),
         "poster_item_id": primary_image_item_id if has_primary_image else "",
+        "poster_tag": image_version if has_primary_image else "",
         "poster_source": (
             "item" if image_tags.get("Primary")
             else "album" if album_primary_image_tag
@@ -1495,6 +1512,7 @@ def normalize_jellyfin_item(raw: dict, library: dict | None = None) -> dict:
         "poster_url": (
             f"/api/jellyfin/image/{urllib.parse.quote(primary_image_item_id)}/Primary"
             f"?source_item_id={urllib.parse.quote(item_id)}"
+            f"&v={urllib.parse.quote(image_version)}"
             if primary_image_item_id and has_primary_image else ""
         ),
         "backdrop_url": (
@@ -2269,6 +2287,22 @@ def fill_metadata_gaps(primary: dict, fallback: dict) -> dict:
     return merged
 
 
+def merge_source_snapshot(current: dict, cached: dict) -> dict:
+    """Merge a source refresh while keeping current source artwork authoritative."""
+    merged = fill_metadata_gaps(current, cached)
+    for field, empty_value in (
+        ("has_poster", False),
+        ("poster_url", ""),
+        ("poster_item_id", ""),
+        ("poster_tag", ""),
+        ("poster_source", ""),
+        ("has_backdrop", False),
+        ("backdrop_url", ""),
+    ):
+        merged[field] = current.get(field, empty_value)
+    return merged
+
+
 def jellyfin_provider_id(provider_ids: dict, *names: str) -> str | None:
     lowered = {str(key).casefold(): value for key, value in (provider_ids or {}).items()}
     for name in names:
@@ -2330,11 +2364,13 @@ def current_jellyfin_metadata(
             settings,
             f"/Items/{urllib.parse.quote(source['jellyfin_item_id'])}",
             {
+                "EnableImages": "true",
+                "ImageTypeLimit": 1,
                 "Fields": "Overview,Genres,RunTimeTicks,CommunityRating,People,"
                           "Studios,PremiereDate,ProviderIds,Path,ImageTags,"
                           "BackdropImageTags,Album,AlbumArtist,Artists,ChildCount,"
                           "PrimaryImageItemId,ParentPrimaryImageItemId,AlbumId,"
-                          "AlbumPrimaryImageTag,"
+                          "AlbumPrimaryImageTag,ParentPrimaryImageTag,"
                           "DateCreated,DateLastSaved,DateLastRefreshed",
             },
         )
@@ -2349,7 +2385,7 @@ def current_jellyfin_metadata(
         fresh["source_metadata_updated_at"] = (
             raw.get("DateLastRefreshed") or raw.get("DateLastSaved")
         )
-        metadata = fill_metadata_gaps(fresh, cached)
+        metadata = merge_source_snapshot(fresh, cached)
         db().execute(
             """
             UPDATE jellyfin_sources
