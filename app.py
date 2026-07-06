@@ -1214,6 +1214,8 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                               "People,Studios,PremiereDate,ProviderIds,Path,"
                               "ImageTags,BackdropImageTags,Album,AlbumArtist,"
                               "Artists,ChildCount,PrimaryImageItemId,"
+                              "ParentPrimaryImageItemId,AlbumId,"
+                              "AlbumPrimaryImageTag,"
                               "DateCreated,DateLastSaved,"
                               "DateLastRefreshed",
                 },
@@ -1223,6 +1225,41 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                 source = jellyfin_item_source(raw, library)
                 if not source["jellyfin_item_id"]:
                     continue
+                if category == "Music":
+                    app.logger.info(
+                        "Jellyfin music artwork source_item_id=%s title=%r "
+                        "item_type=%s has_artwork=%s image_item_id=%s "
+                        "primary_tag=%s album_primary_tag=%s album_id=%s "
+                        "poster_url=%s",
+                        source["jellyfin_item_id"], source["title"],
+                        raw.get("Type"), source["has_poster"],
+                        source.get("poster_item_id") or "",
+                        bool((raw.get("ImageTags") or {}).get("Primary")),
+                        bool(raw.get("AlbumPrimaryImageTag")),
+                        raw.get("AlbumId") or "",
+                        source.get("poster_url") or "",
+                    )
+                    artwork_reported = bool(
+                        (raw.get("ImageTags") or {}).get("Primary")
+                        or raw.get("PrimaryImageItemId")
+                        or raw.get("ParentPrimaryImageItemId")
+                        or raw.get("AlbumPrimaryImageTag")
+                    )
+                    if artwork_reported and not source.get("poster_url"):
+                        app.logger.warning(
+                            "Jellyfin music artwork could not be normalized "
+                            "source_item_id=%s title=%r raw_image_fields=%r",
+                            source["jellyfin_item_id"], source["title"],
+                            {
+                                "ImageTags": raw.get("ImageTags"),
+                                "PrimaryImageItemId": raw.get("PrimaryImageItemId"),
+                                "ParentPrimaryImageItemId":
+                                    raw.get("ParentPrimaryImageItemId"),
+                                "AlbumId": raw.get("AlbumId"),
+                                "AlbumPrimaryImageTag":
+                                    raw.get("AlbumPrimaryImageTag"),
+                            },
+                        )
                 existing_source = db().execute(
                     "SELECT * FROM jellyfin_sources "
                     "WHERE user_id = ? AND server_url = ? "
@@ -1278,9 +1315,21 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                         )
                         result["updated"] += 1
                         library_result["updated"] += 1
+                        cache_action = "updated"
                     else:
                         result["skipped"] += 1
                         library_result["skipped"] += 1
+                        cache_action = "unchanged"
+                    if category == "Music":
+                        app.logger.info(
+                            "Jellyfin music artwork cached source_item_id=%s "
+                            "media_id=%s cache_action=%s has_artwork=%s "
+                            "poster_url=%s",
+                            source["jellyfin_item_id"],
+                            existing_source["media_id"], cache_action,
+                            source["has_poster"],
+                            source.get("poster_url") or "",
+                        )
                     continue
                 candidates = db().execute(
                     "SELECT id, title, year FROM media "
@@ -1345,6 +1394,14 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                         source.get("source_metadata_updated_at"), now,
                     ),
                 )
+                if category == "Music":
+                    app.logger.info(
+                        "Jellyfin music artwork cached source_item_id=%s "
+                        "media_id=%s cache_action=created has_artwork=%s "
+                        "poster_url=%s",
+                        source["jellyfin_item_id"], media_id,
+                        source["has_poster"], source.get("poster_url") or "",
+                    )
             total = db().execute(
                 "SELECT COUNT(*) FROM jellyfin_sources "
                 "WHERE user_id = ? AND server_url = ? "
@@ -1388,9 +1445,19 @@ def normalize_jellyfin_item(raw: dict, library: dict | None = None) -> dict:
     runtime_ticks = raw.get("RunTimeTicks") or 0
     item_id = str(raw.get("Id", ""))
     image_tags = raw.get("ImageTags") or {}
-    primary_image_item_id = str(raw.get("PrimaryImageItemId") or item_id)
+    album_id = str(raw.get("AlbumId") or "")
+    album_primary_image_tag = raw.get("AlbumPrimaryImageTag")
+    inherited_image_item_id = (
+        raw.get("PrimaryImageItemId")
+        or raw.get("ParentPrimaryImageItemId")
+        or (album_id if album_primary_image_tag else "")
+    )
+    primary_image_item_id = str(inherited_image_item_id or item_id)
     has_primary_image = bool(
-        image_tags.get("Primary") or raw.get("PrimaryImageItemId")
+        image_tags.get("Primary")
+        or raw.get("PrimaryImageItemId")
+        or raw.get("ParentPrimaryImageItemId")
+        or album_primary_image_tag
     )
     artists = raw.get("Artists") or []
     artist = raw.get("AlbumArtist") or ", ".join(artists)
@@ -1419,6 +1486,12 @@ def normalize_jellyfin_item(raw: dict, library: dict | None = None) -> dict:
         "has_poster": has_primary_image,
         "has_backdrop": bool(raw.get("BackdropImageTags")),
         "poster_item_id": primary_image_item_id if has_primary_image else "",
+        "poster_source": (
+            "item" if image_tags.get("Primary")
+            else "album" if album_primary_image_tag
+            else "inherited" if has_primary_image
+            else ""
+        ),
         "poster_url": (
             f"/api/jellyfin/image/{urllib.parse.quote(primary_image_item_id)}/Primary"
             f"?source_item_id={urllib.parse.quote(item_id)}"
@@ -2260,7 +2333,8 @@ def current_jellyfin_metadata(
                 "Fields": "Overview,Genres,RunTimeTicks,CommunityRating,People,"
                           "Studios,PremiereDate,ProviderIds,Path,ImageTags,"
                           "BackdropImageTags,Album,AlbumArtist,Artists,ChildCount,"
-                          "PrimaryImageItemId,"
+                          "PrimaryImageItemId,ParentPrimaryImageItemId,AlbumId,"
+                          "AlbumPrimaryImageTag,"
                           "DateCreated,DateLastSaved,DateLastRefreshed",
             },
         )
@@ -3587,20 +3661,37 @@ def jellyfin_image(item_id: str, image_type: str):
         server_url = normalize_server_url(settings["server_url"])
         if not settings["api_key"]:
             raise ValueError("Jellyfin API key is not configured.")
-        url = (
-            f"{server_url}/Items/{urllib.parse.quote(item_id)}/Images/{image_type}"
-            f"?maxWidth={'1280' if image_type == 'Backdrop' else '500'}&quality=90"
-        )
-        req = urllib.request.Request(
-            url,
-            headers={"X-Emby-Token": settings["api_key"], "User-Agent": "MediaVault/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=10) as response:
-            return Response(
-                response.read(),
-                content_type=response.headers.get_content_type(),
-                headers={"Cache-Control": "private, max-age=3600"},
+        image_item_ids = list(dict.fromkeys(
+            candidate for candidate in (item_id, source_item_id) if candidate
+        ))
+        image_errors = []
+        for image_item_id in image_item_ids:
+            url = (
+                f"{server_url}/Items/"
+                f"{urllib.parse.quote(image_item_id)}/Images/{image_type}"
+                f"?maxWidth={'1280' if image_type == 'Backdrop' else '500'}"
+                f"&quality=90"
             )
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "X-Emby-Token": settings["api_key"],
+                    "User-Agent": "MediaVault/1.0",
+                },
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    return Response(
+                        response.read(),
+                        content_type=response.headers.get_content_type(),
+                        headers={"Cache-Control": "private, max-age=3600"},
+                    )
+            except (
+                urllib.error.URLError, urllib.error.HTTPError,
+                TimeoutError, OSError,
+            ) as exc:
+                image_errors.append(f"{image_item_id}: {exc}")
+        raise ValueError("; ".join(image_errors) or "No image item ID available.")
     except (
         ValueError, urllib.error.URLError, urllib.error.HTTPError,
         TimeoutError, OSError,
