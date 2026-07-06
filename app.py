@@ -755,14 +755,21 @@ def row_to_dict(row: sqlite3.Row) -> dict:
 def row_to_card_dict(row: sqlite3.Row) -> dict:
     item = row_to_dict(row)
     raw_metadata = item.pop("metadata_json", None)
+    raw_source_metadata = item.pop("source_metadata_json", None)
     provider = item.pop("metadata_provider", None)
     has_jellyfin = bool(item.pop("has_jellyfin", False))
     try:
-        metadata = json.loads(raw_metadata or "{}")
+        external_metadata = json.loads(raw_metadata or "{}")
     except json.JSONDecodeError:
-        metadata = {}
-    item["title"] = metadata.get("title") or item["title"]
-    item["year"] = metadata.get("year") or item["year"]
+        external_metadata = {}
+    try:
+        source_metadata = json.loads(raw_source_metadata or "{}")
+    except json.JSONDecodeError:
+        source_metadata = {}
+    # Collector-owned title/year remain authoritative. Source metadata is the
+    # first enrichment fallback; external providers fill only its gaps.
+    metadata = fill_metadata_gaps(source_metadata, external_metadata)
+    item["year"] = item["year"] or metadata.get("year")
     item["poster_url"] = metadata.get("poster_url") or ""
     item["overview"] = metadata.get("overview") or ""
     item["runtime_minutes"] = metadata.get("runtime_minutes")
@@ -770,8 +777,8 @@ def row_to_card_dict(row: sqlite3.Row) -> dict:
     item["artist"] = metadata.get("artist") or ""
     item["track_count"] = metadata.get("track_count")
     item["metadata_provider"] = (
-        metadata.get("metadata_source")
-        or (provider.upper() if provider else "")
+        external_metadata.get("metadata_source")
+        or (provider.upper() if provider and provider != "jellyfin" else "")
     )
     item["sources"] = ["Jellyfin"] if has_jellyfin else []
     return item
@@ -1205,7 +1212,8 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                     "Fields": "Overview,Genres,RunTimeTicks,CommunityRating,"
                               "People,Studios,PremiereDate,ProviderIds,Path,"
                               "ImageTags,BackdropImageTags,Album,AlbumArtist,"
-                              "Artists,ChildCount,DateCreated,DateLastSaved,"
+                              "Artists,ChildCount,PrimaryImageItemId,"
+                              "DateCreated,DateLastSaved,"
                               "DateLastRefreshed",
                 },
             )
@@ -1221,6 +1229,26 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                     (user_id, server_url, source["jellyfin_item_id"]),
                 ).fetchone()
                 if existing_source:
+                    try:
+                        cached_source = json.loads(
+                            existing_source["metadata_json"] or "{}"
+                        )
+                    except json.JSONDecodeError as exc:
+                        cached_source = {}
+                        app.logger.warning(
+                            "Cached Jellyfin source metadata invalid "
+                            "source_item_id=%s error=%s",
+                            source["jellyfin_item_id"], exc,
+                        )
+                    # Jellyfin can occasionally return a sparse item snapshot.
+                    # Preserve previously cached source values (especially
+                    # artwork) rather than replacing them with blanks.
+                    if (
+                        source.get("title") == "Untitled"
+                        and metadata_value_present(cached_source.get("title"))
+                    ):
+                        source["title"] = ""
+                    source = fill_metadata_gaps(source, cached_source)
                     source_json = json.dumps(source, separators=(",", ":"))
                     changed = (
                         existing_source["source_title"] != source["title"]
@@ -1358,6 +1386,11 @@ def normalize_jellyfin_item(raw: dict, library: dict | None = None) -> dict:
     studios = raw.get("Studios") or []
     runtime_ticks = raw.get("RunTimeTicks") or 0
     item_id = str(raw.get("Id", ""))
+    image_tags = raw.get("ImageTags") or {}
+    primary_image_item_id = str(raw.get("PrimaryImageItemId") or item_id)
+    has_primary_image = bool(
+        image_tags.get("Primary") or raw.get("PrimaryImageItemId")
+    )
     artists = raw.get("Artists") or []
     artist = raw.get("AlbumArtist") or ", ".join(artists)
     return {
@@ -1382,11 +1415,13 @@ def normalize_jellyfin_item(raw: dict, library: dict | None = None) -> dict:
         "track_count": raw.get("ChildCount"),
         "provider_ids": raw.get("ProviderIds") or {},
         "path": raw.get("Path") or "",
-        "has_poster": bool((raw.get("ImageTags") or {}).get("Primary")),
+        "has_poster": has_primary_image,
         "has_backdrop": bool(raw.get("BackdropImageTags")),
+        "poster_item_id": primary_image_item_id if has_primary_image else "",
         "poster_url": (
-            f"/api/jellyfin/image/{urllib.parse.quote(item_id)}/Primary"
-            if item_id and (raw.get("ImageTags") or {}).get("Primary") else ""
+            f"/api/jellyfin/image/{urllib.parse.quote(primary_image_item_id)}/Primary"
+            f"?source_item_id={urllib.parse.quote(item_id)}"
+            if primary_image_item_id and has_primary_image else ""
         ),
         "backdrop_url": (
             f"/api/jellyfin/image/{urllib.parse.quote(item_id)}/Backdrop"
@@ -2224,6 +2259,7 @@ def current_jellyfin_metadata(
                 "Fields": "Overview,Genres,RunTimeTicks,CommunityRating,People,"
                           "Studios,PremiereDate,ProviderIds,Path,ImageTags,"
                           "BackdropImageTags,Album,AlbumArtist,Artists,ChildCount,"
+                          "PrimaryImageItemId,"
                           "DateCreated,DateLastSaved,DateLastRefreshed",
             },
         )
@@ -2328,12 +2364,20 @@ def enrich_media_item(
         item_id, item["title"], item["media_type"], bool(source),
     )
 
-    jellyfin_metadata = {}
+    cached_source_metadata = {}
+    if source:
+        try:
+            cached_source_metadata = json.loads(source["metadata_json"] or "{}")
+        except json.JSONDecodeError as exc:
+            app.logger.warning(
+                "Cached Jellyfin metadata invalid item_id=%s source_item_id=%s "
+                "error=%s",
+                item_id, source["jellyfin_item_id"], exc,
+            )
+    jellyfin_metadata = cached_source_metadata
     use_jellyfin_metadata = bool(
         source and jellyfin_settings(user_id)["use_metadata"]
     )
-    if attachment and attachment["provider"] == "jellyfin" and not use_jellyfin_metadata:
-        existing_metadata = {}
     if use_jellyfin_metadata:
         app.logger.info("Jellyfin metadata attempted item_id=%s", item_id)
         jellyfin_metadata = current_jellyfin_metadata(
@@ -2354,6 +2398,7 @@ def enrich_media_item(
     }
     fallback_metadata = existing_metadata
     fallback_provider = attachment["provider"] if attachment else None
+    fallback_external_id = attachment["external_id"] if attachment else ""
     errors = []
     fallback_fields = (
         ("poster_url", "genres", "runtime_minutes", "track_count")
@@ -2393,14 +2438,18 @@ def enrich_media_item(
                     "External metadata fallback item_id=%s provider=%s id=%s",
                     item_id, provider, external_id,
                 )
-                fallback_metadata = (
+                fetched_metadata = (
                     fetch_musicbrainz_release(
                         external_id, warning_collector
                     )
                     if provider == "musicbrainz"
                     else fetcher(external_id)
                 )
+                fallback_metadata = fill_metadata_gaps(
+                    fetched_metadata, existing_metadata
+                )
                 fallback_provider = provider
+                fallback_external_id = str(external_id)
                 break
             except ValueError as exc:
                 errors.append(f"{provider}: {exc}")
@@ -2436,10 +2485,14 @@ def enrich_media_item(
                     "External metadata fallback item_id=%s provider=%s id=%s",
                     item_id, provider, external_id,
                 )
-                fallback_metadata = fetch_provider_title(
+                fetched_metadata = fetch_provider_title(
                     provider, external_id, item["media_type"]
                 )
+                fallback_metadata = fill_metadata_gaps(
+                    fetched_metadata, existing_metadata
+                )
                 fallback_provider = provider
+                fallback_external_id = str(external_id)
                 break
             except ValueError as exc:
                 errors.append(f"{provider.upper()}: {exc}")
@@ -2453,16 +2506,21 @@ def enrich_media_item(
 
     if jellyfin_metadata:
         final_metadata = fill_metadata_gaps(jellyfin_metadata, fallback_metadata)
-        final_metadata["metadata_source"] = "Jellyfin"
-        provider = "jellyfin"
-        external_id = source["jellyfin_item_id"]
+        if fallback_provider and fallback_provider != "jellyfin":
+            provider = fallback_provider
+            external_id = fallback_external_id
+            final_metadata["metadata_source"] = (
+                fallback_metadata.get("metadata_source") or provider
+            )
+        else:
+            provider = "jellyfin"
+            external_id = source["jellyfin_item_id"]
+            final_metadata["metadata_source"] = "Jellyfin"
     elif fallback_metadata:
         final_metadata = fallback_metadata
         provider = fallback_provider
-        external_id = (
-            attachment["external_id"]
-            if attachment and attachment["provider"] == provider
-            else str(final_metadata.get("external_id") or "")
+        external_id = fallback_external_id or str(
+            final_metadata.get("external_id") or ""
         )
     else:
         if errors:
@@ -3119,6 +3177,13 @@ def list_media():
     rows = db().execute(
         f"""
         SELECT m.*, ma.provider AS metadata_provider, ma.metadata_json,
+               (
+                   SELECT js.metadata_json FROM jellyfin_sources js
+                   WHERE js.media_id = m.id
+                     AND js.user_id = m.owner_id
+                     AND js.action IN ('attached', 'created')
+                   ORDER BY js.created_at DESC LIMIT 1
+               ) AS source_metadata_json,
                EXISTS(
                    SELECT 1 FROM jellyfin_sources js
                    WHERE js.media_id = m.id
@@ -3175,10 +3240,30 @@ def media_quick_view(item_id: int):
         "SELECT * FROM metadata_attachments WHERE media_id = ?",
         (item_id,),
     ).fetchone()
-    metadata = {}
+    source_metadata = {}
+    if source:
+        try:
+            source_metadata = json.loads(source["metadata_json"] or "{}")
+        except json.JSONDecodeError as exc:
+            app.logger.warning(
+                "Cached Jellyfin metadata invalid item_id=%s source_item_id=%s "
+                "error=%s",
+                item_id, source["jellyfin_item_id"], exc,
+            )
+    external_metadata = {}
     metadata_source = None
     if metadata_attachment:
-        metadata = json.loads(metadata_attachment["metadata_json"] or "{}")
+        try:
+            external_metadata = json.loads(
+                metadata_attachment["metadata_json"] or "{}"
+            )
+        except json.JSONDecodeError as exc:
+            app.logger.warning(
+                "Attached metadata invalid item_id=%s provider=%s error=%s",
+                item_id, metadata_attachment["provider"], exc,
+            )
+    metadata = fill_metadata_gaps(source_metadata, external_metadata)
+    if metadata_attachment:
         provider_names = {
             "omdb": "OMDb", "tmdb": "TMDB",
             "musicbrainz": "MusicBrainz",
@@ -3195,6 +3280,10 @@ def media_quick_view(item_id: int):
             "external_id": metadata_attachment["external_id"],
             "refreshed_at": metadata_attachment["refreshed_at"],
         }
+    else:
+        # Jellyfin remains a source/provenance indicator rather than being
+        # mislabeled as an external metadata provider.
+        metadata["metadata_source"] = ""
     jellyfin_source = None
     if source:
         jellyfin_source = {
@@ -3490,7 +3579,9 @@ def metadata_refresh_status():
 def jellyfin_image(item_id: str, image_type: str):
     if image_type not in ("Primary", "Backdrop"):
         return jsonify({"error": "Invalid image type."}), 400
-    settings = jellyfin_settings()
+    user_id = active_user_id()
+    source_item_id = request.args.get("source_item_id", item_id)
+    settings = jellyfin_settings(user_id)
     try:
         server_url = normalize_server_url(settings["server_url"])
         if not settings["api_key"]:
@@ -3510,6 +3601,28 @@ def jellyfin_image(item_id: str, image_type: str):
                 headers={"Cache-Control": "private, max-age=3600"},
             )
     except (ValueError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+        source = db().execute(
+            "SELECT metadata_json FROM jellyfin_sources "
+            "WHERE user_id = ? AND jellyfin_item_id = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (user_id, source_item_id),
+        ).fetchone()
+        cached = {}
+        if source:
+            try:
+                cached = json.loads(source["metadata_json"] or "{}")
+            except json.JSONDecodeError:
+                pass
+        if (
+            image_type == "Primary" and cached.get("has_poster")
+        ) or (
+            image_type == "Backdrop" and cached.get("has_backdrop")
+        ):
+            app.logger.warning(
+                "Jellyfin source artwork unavailable user_id=%s "
+                "source_item_id=%s image_item_id=%s image_type=%s error=%s",
+                user_id, source_item_id, item_id, image_type, exc,
+            )
         return jsonify({"error": f"Could not load Jellyfin image: {exc}"}), 404
 
 
@@ -3833,6 +3946,13 @@ def dashboard():
     recent = connection.execute(
         """
         SELECT m.*, ma.provider AS metadata_provider, ma.metadata_json,
+               (
+                   SELECT js.metadata_json FROM jellyfin_sources js
+                   WHERE js.media_id = m.id
+                     AND js.user_id = m.owner_id
+                     AND js.action IN ('attached', 'created')
+                   ORDER BY js.created_at DESC LIMIT 1
+               ) AS source_metadata_json,
                EXISTS(
                    SELECT 1 FROM jellyfin_sources js
                    WHERE js.media_id = m.id
