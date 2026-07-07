@@ -295,6 +295,37 @@
     </div>
   </div>
 
+  <div class="modal-backdrop" id="wishlistSearchModal" hidden>
+    <div class="modal wishlist-search-modal" role="dialog" aria-modal="true" aria-labelledby="wishlistSearchTitle">
+      <div class="modal-head">
+        <div><p class="eyebrow">WISHLIST SEARCH</p><h2 id="wishlistSearchTitle">Add to Wishlist</h2></div>
+        <button class="icon-button" id="closeWishlistSearchModal" aria-label="Close">Ã—</button>
+      </div>
+      <div class="wishlist-search-body">
+        <label class="wishlist-search-field">
+          <span>Search movies, shows, music, and games</span>
+          <input id="wishlistSearchInput" autocomplete="off" placeholder="Start typing a title or albumâ€¦">
+        </label>
+        <div class="wishlist-search-filters" id="wishlistSearchFilters" hidden>
+          <button class="active" data-wishlist-search-type="all">All</button>
+          <button data-wishlist-search-type="movies">Movies</button>
+          <button data-wishlist-search-type="tv">TV</button>
+          <button data-wishlist-search-type="music">Music</button>
+          <button data-wishlist-search-type="games">Games</button>
+        </div>
+        <p class="form-error" id="wishlistSearchError"></p>
+        <div class="wishlist-search-results" id="wishlistSearchResults">
+          <div class="empty-state"><strong>Search first.</strong><span>Type at least two characters to find something for your Wishlist.</span></div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="button secondary" id="wishlistAddManual">Add Manually</button>
+          <span></span>
+          <button type="button" class="button secondary" id="cancelWishlistSearchModal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-backdrop" id="wishlistModal" hidden>
     <div class="modal wishlist-modal" role="dialog" aria-modal="true" aria-labelledby="wishlistModalTitle">
       <div class="modal-head"><div><p class="eyebrow">WISHLIST ITEM</p><h2 id="wishlistModalTitle">Add Wishlist Item</h2></div><button class="icon-button" id="closeWishlistModal" aria-label="Close">×</button></div>

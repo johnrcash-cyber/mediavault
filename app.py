@@ -837,6 +837,280 @@ def clean_wishlist_payload(payload: dict) -> dict:
     }
 
 
+def wishlist_search_media_type(value: str) -> str:
+    normalized = str(value or "").strip().casefold()
+    return {
+        "movie": "Movie",
+        "movies": "Movie",
+        "tv": "Television",
+        "television": "Television",
+        "show": "Television",
+        "series": "Television",
+        "music": "Music",
+        "album": "Music",
+        "game": "Game",
+        "games": "Game",
+    }.get(normalized, "")
+
+
+def wishlist_search_result(
+    *,
+    title: str,
+    media_type: str,
+    provider: str,
+    provider_id: str = "",
+    year: int | None = None,
+    poster_url: str = "",
+    overview: str = "",
+    artist: str = "",
+    runtime_minutes: int | None = None,
+    genres: list[str] | None = None,
+) -> dict:
+    return {
+        "title": title or "Untitled",
+        "year": year,
+        "media_type": wishlist_search_media_type(media_type) or media_type,
+        "provider": provider,
+        "provider_id": str(provider_id or ""),
+        "poster_url": poster_url or "",
+        "overview": overview or "",
+        "artist": artist or "",
+        "runtime_minutes": runtime_minutes,
+        "genres": genres or [],
+    }
+
+
+def wishlist_search_movie_tv(query: str, media_type: str) -> tuple[list[dict], list[str]]:
+    settings = provider_settings()
+    results: list[dict] = []
+    warnings: list[str] = []
+    omdb_type = "series" if media_type == "Television" else "movie"
+    if settings["omdb_api_key"]:
+        try:
+            response = omdb_request({"s": query, "type": omdb_type, "page": 1})
+            for raw in response.get("Search", [])[:8]:
+                poster = raw.get("Poster") or ""
+                if poster == "N/A":
+                    poster = ""
+                year_text = raw.get("Year") or ""
+                results.append(wishlist_search_result(
+                    title=raw.get("Title") or "Untitled",
+                    media_type=media_type,
+                    provider="OMDb",
+                    provider_id=raw.get("imdbID") or "",
+                    year=int(year_text[:4]) if year_text[:4].isdigit() else None,
+                    poster_url=poster,
+                    overview="",
+                ))
+        except ValueError as exc:
+            if "not found" not in str(exc).casefold():
+                warnings.append(f"OMDb: {exc}")
+    if settings["tmdb_api_key"]:
+        try:
+            path = "/search/tv" if media_type == "Television" else "/search/movie"
+            response = tmdb_request(path, {
+                "query": query,
+                "include_adult": "false",
+                "language": "en-US",
+                "page": 1,
+            })
+            for raw in response.get("results", [])[:8]:
+                poster_path = raw.get("poster_path") or ""
+                release_date = raw.get("first_air_date") if media_type == "Television" else raw.get("release_date")
+                release_date = release_date or ""
+                results.append(wishlist_search_result(
+                    title=raw.get("name") or raw.get("title") or "Untitled",
+                    media_type=media_type,
+                    provider="TMDB",
+                    provider_id=raw.get("id") or "",
+                    year=int(release_date[:4]) if release_date[:4].isdigit() else None,
+                    poster_url=f"https://image.tmdb.org/t/p/w342{poster_path}" if poster_path else "",
+                    overview=raw.get("overview") or "",
+                ))
+        except ValueError as exc:
+            warnings.append(f"TMDB: {exc}")
+    return results, warnings
+
+
+def wishlist_search_music(query: str) -> tuple[list[dict], list[str]]:
+    results: list[dict] = []
+    warnings: list[str] = []
+    for provider in music_provider_order():
+        try:
+            if provider == "musicbrainz":
+                response = musicbrainz_request(
+                    "/release/", {"query": f'release:"{query.replace(chr(34), "")}"', "limit": 8}
+                )
+                for raw in response.get("releases", []):
+                    date = raw.get("date") or ""
+                    release_id = raw.get("id") or ""
+                    archive = raw.get("cover-art-archive") or {}
+                    release_group = raw.get("release-group") or {}
+                    results.append(wishlist_search_result(
+                        title=raw.get("title") or "Untitled",
+                        media_type="Music",
+                        provider="MusicBrainz",
+                        provider_id=release_id,
+                        artist=artist_credit_text(raw),
+                        year=int(date[:4]) if date[:4].isdigit() else None,
+                        poster_url=(
+                            f"https://coverartarchive.org/release/{release_id}/front-250"
+                            if release_id and archive.get("front") else ""
+                        ),
+                        overview=", ".join(filter(None, [
+                            raw.get("country"), raw.get("status"),
+                            release_group.get("primary-type"),
+                        ])),
+                    ))
+            elif provider == "discogs":
+                response = discogs_request(
+                    "/database/search",
+                    {"q": query, "type": "release", "per_page": 8},
+                )
+                for raw in response.get("results", []):
+                    title = raw.get("title") or "Untitled"
+                    artist, _, album = title.partition(" - ")
+                    results.append(wishlist_search_result(
+                        title=album or title,
+                        media_type="Music",
+                        provider="Discogs",
+                        provider_id=raw.get("id") or "",
+                        artist=artist if album else "",
+                        year=raw.get("year"),
+                        poster_url=raw.get("cover_image") or raw.get("thumb") or "",
+                        overview=", ".join(raw.get("format") or []),
+                    ))
+            elif provider == "lastfm":
+                response = lastfm_request({
+                    "method": "album.search", "album": query, "limit": 8,
+                })
+                matches = ((response.get("results") or {}).get("albummatches") or {}).get("album") or []
+                if isinstance(matches, dict):
+                    matches = [matches]
+                for raw in matches:
+                    images = raw.get("image") or []
+                    poster = next(
+                        (image.get("#text") for image in reversed(images) if image.get("#text")), ""
+                    )
+                    artist = raw.get("artist") or ""
+                    title = raw.get("name") or query
+                    results.append(wishlist_search_result(
+                        title=title,
+                        media_type="Music",
+                        provider="Last.fm",
+                        provider_id=lastfm_external_id(artist, title),
+                        artist=artist,
+                        poster_url=poster,
+                        overview="",
+                    ))
+        except ValueError as exc:
+            warnings.append(f"{provider}: {exc}")
+    return results, warnings
+
+
+def wishlist_search_games(query: str) -> tuple[list[dict], list[str]]:
+    api_key = provider_settings()["rawg_api_key"].strip()
+    if not api_key:
+        return [], []
+    try:
+        response = public_json_request(
+            "https://api.rawg.io/api/games?" + urllib.parse.urlencode({
+                "key": api_key,
+                "search": query,
+                "page_size": 8,
+            }),
+            "RAWG",
+        )
+        results = []
+        for raw in response.get("results", []):
+            release_date = raw.get("released") or ""
+            results.append(wishlist_search_result(
+                title=raw.get("name") or "Untitled",
+                media_type="Game",
+                provider="RAWG",
+                provider_id=raw.get("id") or "",
+                year=int(release_date[:4]) if release_date[:4].isdigit() else None,
+                poster_url=raw.get("background_image") or "",
+                overview=", ".join(
+                    genre.get("name") for genre in (raw.get("genres") or [])
+                    if genre.get("name")
+                ),
+            ))
+        return results, []
+    except ValueError as exc:
+        return [], [f"RAWG: {exc}"]
+
+
+def hydrate_wishlist_search_metadata(result: dict) -> dict:
+    provider = str(result.get("provider") or "")
+    provider_id = str(result.get("provider_id") or "")
+    media_type = wishlist_search_media_type(result.get("media_type") or "")
+    try:
+        if provider == "OMDb" and provider_id:
+            metadata = fetch_omdb_movie(provider_id)
+        elif provider == "TMDB" and provider_id and media_type == "Television":
+            metadata = fetch_provider_television("tmdb", provider_id)
+        elif provider == "TMDB" and provider_id:
+            metadata = fetch_tmdb_movie(provider_id)
+        elif provider == "MusicBrainz" and provider_id:
+            metadata = fetch_musicbrainz_release(provider_id)
+        elif provider == "Discogs" and provider_id:
+            metadata = fetch_discogs_release(provider_id)
+        elif provider == "Last.fm" and provider_id:
+            metadata = fetch_lastfm_album(provider_id)
+        else:
+            metadata = {}
+    except (ValueError, urllib.error.URLError) as exc:
+        app.logger.info(
+            "Wishlist search detail hydration skipped provider=%s id=%s error=%s",
+            provider, provider_id, exc,
+        )
+        metadata = {}
+    merged = dict(result)
+    for key in (
+        "title", "year", "poster_url", "overview", "genres",
+        "runtime_minutes", "artist",
+    ):
+        value = metadata.get(key)
+        if value not in (None, "", []):
+            merged[key] = value
+    merged["provider"] = metadata.get("metadata_source") or provider
+    merged["provider_id"] = metadata.get("external_id") or provider_id
+    return merged
+
+
+def wishlist_duplicate_exists(user_id: int, item: dict) -> bool:
+    provider = str(item.get("provider") or "").strip()
+    provider_id = str(item.get("provider_id") or "").strip()
+    if provider and provider_id:
+        if db().execute(
+            """
+            SELECT 1 FROM wishlist_items
+            WHERE owner_id = ? AND status = 'Open'
+              AND provider = ? AND provider_id = ?
+            LIMIT 1
+            """,
+            (user_id, provider, provider_id),
+        ).fetchone():
+            return True
+    title = normalized_title(item.get("title") or "")
+    media_type = wishlist_search_media_type(item.get("media_type") or "")
+    for row in db().execute(
+        """
+        SELECT title, year, media_type FROM wishlist_items
+        WHERE owner_id = ? AND status = 'Open'
+        """,
+        (user_id,),
+    ).fetchall():
+        if (
+            normalized_title(row["title"] or "") == title
+            and (row["year"] or None) == (item.get("year") or None)
+            and (row["media_type"] or "") == media_type
+        ):
+            return True
+    return False
+
+
 def enrich_wishlist_item(item_id: int, owner_id: int) -> dict:
     """Enrich a wishlist row without ever creating or changing catalog media."""
     item = db().execute(
@@ -4067,6 +4341,151 @@ def list_wishlist_items():
         (user_id,),
     ).fetchall()
     return jsonify([wishlist_to_dict(row) for row in rows])
+
+
+@app.get("/api/wishlist/search")
+def search_wishlist_candidates():
+    query = request.args.get("q", "").strip()
+    result_type = request.args.get("type", "all").strip().casefold() or "all"
+    if len(query) < 2:
+        return jsonify({"results": [], "warnings": []})
+
+    allowed = {
+        "all": {"Movie", "Television", "Music", "Game"},
+        "movies": {"Movie"},
+        "movie": {"Movie"},
+        "tv": {"Television"},
+        "television": {"Television"},
+        "music": {"Music"},
+        "games": {"Game"},
+        "game": {"Game"},
+    }
+    wanted_types = allowed.get(result_type, allowed["all"])
+    results: list[dict] = []
+    warnings: list[str] = []
+    provider_calls = (
+        ("Movie", lambda: wishlist_search_movie_tv(query, "Movie")),
+        ("Television", lambda: wishlist_search_movie_tv(query, "Television")),
+        ("Music", lambda: wishlist_search_music(query)),
+        ("Game", lambda: wishlist_search_games(query)),
+    )
+    for media_type, searcher in provider_calls:
+        if media_type not in wanted_types:
+            continue
+        try:
+            provider_results, provider_warnings = searcher()
+            results.extend(provider_results)
+            warnings.extend(provider_warnings)
+        except Exception as exc:
+            app.logger.exception(
+                "Wishlist search provider group failed type=%s query=%r",
+                media_type, query,
+            )
+            warnings.append(f"{media_type}: {exc}")
+
+    deduped = []
+    seen = set()
+    for result in results:
+        key = (
+            result.get("provider"),
+            result.get("provider_id"),
+            normalized_title(result.get("title") or ""),
+            result.get("year"),
+            result.get("media_type"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(result)
+    return jsonify({"results": deduped[:30], "warnings": warnings[:8]})
+
+
+@app.post("/api/wishlist/from-search")
+def add_wishlist_from_search():
+    user_id = active_user_id()
+    payload = request.get_json(silent=True) or {}
+    item = {
+        "title": str(payload.get("title", "")).strip(),
+        "artist": str(payload.get("artist", "")).strip(),
+        "year": payload.get("year"),
+        "media_type": wishlist_search_media_type(payload.get("media_type") or ""),
+        "provider": str(payload.get("provider", "")).strip(),
+        "provider_id": str(payload.get("provider_id", "")).strip(),
+        "poster_url": str(payload.get("poster_url", "")).strip(),
+        "overview": str(payload.get("overview", "")).strip(),
+        "genres": payload.get("genres") if isinstance(payload.get("genres"), list) else [],
+        "runtime_minutes": payload.get("runtime_minutes"),
+    }
+    if not item["title"]:
+        return jsonify({"error": "Choose a result before adding it."}), 400
+    if item["media_type"] not in ("Movie", "Television", "Music", "Game"):
+        return jsonify({"error": "Choose a supported Wishlist result type."}), 400
+    try:
+        if item["year"] not in (None, ""):
+            item["year"] = int(item["year"])
+        else:
+            item["year"] = None
+    except (TypeError, ValueError):
+        item["year"] = None
+    try:
+        if item["runtime_minutes"] not in (None, ""):
+            item["runtime_minutes"] = int(item["runtime_minutes"])
+        else:
+            item["runtime_minutes"] = None
+    except (TypeError, ValueError):
+        item["runtime_minutes"] = None
+
+    if wishlist_duplicate_exists(user_id, item):
+        return jsonify({"error": "Already on your Wishlist."}), 409
+
+    item = hydrate_wishlist_search_metadata(item)
+    if wishlist_duplicate_exists(user_id, item):
+        return jsonify({"error": "Already on your Wishlist."}), 409
+
+    now = datetime.now(timezone.utc).isoformat()
+    metadata_found = any((
+        item.get("provider"), item.get("provider_id"), item.get("poster_url"),
+        item.get("overview"), item.get("genres"), item.get("runtime_minutes"),
+    ))
+    try:
+        cursor = db().execute(
+            """
+            INSERT INTO wishlist_items (
+                user_id, owner_id, title, artist, year, media_type, notes, status,
+                wishlist_status, metadata_status, poster_url, overview, genres,
+                runtime_minutes, provider, provider_id, enriched_at,
+                enrichment_status, enrichment_error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, '', 'Open', 'wanted', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            """,
+            (
+                user_id, user_id, item["title"], item.get("artist") or "",
+                item.get("year"), item["media_type"],
+                "Found" if metadata_found else "Pending",
+                item.get("poster_url") or "", item.get("overview") or "",
+                json.dumps(item.get("genres") or []),
+                item.get("runtime_minutes"), item.get("provider") or "",
+                item.get("provider_id") or "",
+                now if metadata_found else None,
+                "Found" if metadata_found else "Pending",
+                now, now,
+            ),
+        )
+        db().commit()
+    except sqlite3.Error:
+        db().rollback()
+        app.logger.exception(
+            "Wishlist search add failed user_id=%s title=%r provider=%s provider_id=%s",
+            user_id, item.get("title"), item.get("provider"),
+            item.get("provider_id"),
+        )
+        return jsonify({
+            "error": "Wishlist item could not be added. Check the server log."
+        }), 500
+    row = db().execute(
+        "SELECT * FROM wishlist_items WHERE id = ? AND owner_id = ?",
+        (cursor.lastrowid, user_id),
+    ).fetchone()
+    return jsonify(wishlist_to_dict(row)), 201
 
 
 @app.post("/api/wishlist")

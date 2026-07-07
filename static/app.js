@@ -4,7 +4,7 @@ const savedDisplayView = localStorage.getItem("mediavault_display_view");
 const sortableKeys = ["title", "year", "media_type", "runtime", "format", "status", "provider", "rating", "enrichment"];
 const savedSortKey = localStorage.getItem("mediavault_sort_key");
 const savedSortDirection = localStorage.getItem("mediavault_sort_direction");
-const state = { query: "", type: "", status: "", origin: "", view: "dashboard", displayView: ["poster", "list"].includes(savedDisplayView) ? savedDisplayView : "poster", sortKey: sortableKeys.includes(savedSortKey) ? savedSortKey : "", sortDirection: ["asc", "desc"].includes(savedSortDirection) ? savedSortDirection : "asc", items: [], wishlistItems: [], wishlistDetailItem: null, returnToWishlistDetail: false, jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviderPriority: "musicbrainz,discogs,coverartarchive,lastfm", musicProviders: ["musicbrainz"], settingsTab: "sources", catalogPreview: null, catalogCategory: "new_items" };
+const state = { query: "", type: "", status: "", origin: "", view: "dashboard", displayView: ["poster", "list"].includes(savedDisplayView) ? savedDisplayView : "poster", sortKey: sortableKeys.includes(savedSortKey) ? savedSortKey : "", sortDirection: ["asc", "desc"].includes(savedSortDirection) ? savedSortDirection : "asc", items: [], wishlistItems: [], wishlistDetailItem: null, wishlistSearchResults: [], wishlistSearchType: "all", returnToWishlistDetail: false, jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviderPriority: "musicbrainz,discogs,coverartarchive,lastfm", musicProviders: ["musicbrainz"], settingsTab: "sources", catalogPreview: null, catalogCategory: "new_items" };
 const typeIcons = { Movies: "▶", Television: "TV", Music: "♫", Games: "✦", Books: "B", Other: "MV" };
 
 async function api(url, options = {}) {
@@ -1028,6 +1028,107 @@ function closeWishlistModal() {
   }
 }
 
+let wishlistSearchTimer;
+let wishlistSearchRequestId = 0;
+
+function openWishlistSearchModal() {
+  state.wishlistSearchResults = [];
+  state.wishlistSearchType = "all";
+  $("#wishlistSearchInput").value = "";
+  $("#wishlistSearchError").textContent = "";
+  $("#wishlistSearchFilters").hidden = true;
+  $$("#wishlistSearchFilters button").forEach((button) =>
+    button.classList.toggle("active", button.dataset.wishlistSearchType === "all")
+  );
+  $("#wishlistSearchResults").innerHTML =
+    `<div class="empty-state"><strong>Search first.</strong><span>Type at least two characters to find something for your Wishlist.</span></div>`;
+  $("#wishlistSearchModal").hidden = false;
+  document.body.style.overflow = "hidden";
+  setTimeout(() => $("#wishlistSearchInput").focus(), 30);
+}
+
+function closeWishlistSearchModal() {
+  clearTimeout(wishlistSearchTimer);
+  $("#wishlistSearchModal").hidden = true;
+  document.body.style.overflow = "";
+}
+
+function wishlistResultTypeLabel(result) {
+  return ({ Movie: "Movie", Television: "TV", Music: "Music", Game: "Game" })[result.media_type] || result.media_type || "Result";
+}
+
+function renderWishlistSearchResults(statusMessage = "") {
+  const container = $("#wishlistSearchResults");
+  const query = $("#wishlistSearchInput").value.trim();
+  $("#wishlistSearchFilters").hidden = state.wishlistSearchResults.length === 0;
+  if (statusMessage) {
+    container.innerHTML = `<div class="empty-state"><strong>${escapeHtml(statusMessage)}</strong></div>`;
+    return;
+  }
+  if (query.length < 2) {
+    container.innerHTML =
+      `<div class="empty-state"><strong>Search first.</strong><span>Type at least two characters to find something for your Wishlist.</span></div>`;
+    return;
+  }
+  if (!state.wishlistSearchResults.length) {
+    container.innerHTML = `<div class="empty-state"><strong>No matches found.</strong><span>Try a different title or add it manually.</span></div>`;
+    return;
+  }
+  container.innerHTML = state.wishlistSearchResults.map((result, index) => `
+    <article class="wishlist-search-result" data-wishlist-result-index="${index}">
+      <div class="wishlist-result-art">
+        ${result.poster_url ? `<img src="${escapeHtml(result.poster_url)}" alt="">` : `<span>${escapeHtml((result.media_type || "MV").slice(0, 2))}</span>`}
+      </div>
+      <div class="wishlist-result-copy">
+        <div class="wishlist-result-heading">
+          <strong>${escapeHtml(result.title || "Untitled")}</strong>
+          <span>${escapeHtml(wishlistResultTypeLabel(result))}</span>
+        </div>
+        <small>${[result.artist, result.year, result.provider].filter(Boolean).map(escapeHtml).join(" · ")}</small>
+        <p>${escapeHtml(result.overview || "No summary available.")}</p>
+      </div>
+      <button class="button primary" data-wishlist-result-add>Add</button>
+    </article>
+  `).join("");
+}
+
+async function searchWishlistCandidates() {
+  const query = $("#wishlistSearchInput").value.trim();
+  const requestId = ++wishlistSearchRequestId;
+  $("#wishlistSearchError").textContent = "";
+  if (query.length < 2) {
+    state.wishlistSearchResults = [];
+    renderWishlistSearchResults();
+    return;
+  }
+  renderWishlistSearchResults("Searching…");
+  try {
+    const params = new URLSearchParams({ q: query, type: state.wishlistSearchType });
+    const data = await api(`/api/wishlist/search?${params.toString()}`);
+    if (requestId !== wishlistSearchRequestId) return;
+    state.wishlistSearchResults = data.results || [];
+    $("#wishlistSearchError").textContent = (data.warnings || []).length && !state.wishlistSearchResults.length
+      ? "Some providers were unavailable. Showing any available results."
+      : "";
+    renderWishlistSearchResults();
+  } catch (error) {
+    if (requestId !== wishlistSearchRequestId) return;
+    state.wishlistSearchResults = [];
+    $("#wishlistSearchError").textContent = error.message;
+    renderWishlistSearchResults("Search unavailable.");
+  }
+}
+
+function scheduleWishlistSearch() {
+  clearTimeout(wishlistSearchTimer);
+  wishlistSearchTimer = setTimeout(searchWishlistCandidates, 320);
+}
+
+function openWishlistManualModal() {
+  closeWishlistSearchModal();
+  openWishlistModal();
+}
+
 function openWishlistDetail(item) {
   if (!item) {
     toast("That Wishlist item is no longer available.");
@@ -1134,7 +1235,30 @@ document.addEventListener("click", async (event) => {
     return;
   }
   if (event.target.closest("[data-add-wishlist]")) {
-    openWishlistModal();
+    openWishlistSearchModal();
+    return;
+  }
+  const wishlistResultAdd = event.target.closest("[data-wishlist-result-add]");
+  if (wishlistResultAdd) {
+    const row = wishlistResultAdd.closest("[data-wishlist-result-index]");
+    const result = state.wishlistSearchResults[Number(row?.dataset.wishlistResultIndex)];
+    if (!result) return;
+    wishlistResultAdd.disabled = true;
+    wishlistResultAdd.textContent = "Adding…";
+    try {
+      await api("/api/wishlist/from-search", {
+        method: "POST",
+        body: JSON.stringify(result),
+      });
+      wishlistResultAdd.textContent = "Added";
+      toast("Added to Wishlist.");
+      await loadWishlist();
+    } catch (error) {
+      wishlistResultAdd.disabled = false;
+      wishlistResultAdd.textContent = "Add";
+      $("#wishlistSearchError").textContent = error.message;
+      toast(error.message, 4000);
+    }
     return;
   }
   const wishlistAction = event.target.closest("[data-wishlist-action]");
@@ -1365,6 +1489,7 @@ $("#searchInput").addEventListener("input", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "/" && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) { event.preventDefault(); $("#searchInput").focus(); }
   if (event.key === "Escape" && !$("#metadataSearchModal").hidden) closeMetadataSearch();
+  else if (event.key === "Escape" && !$("#wishlistSearchModal").hidden) closeWishlistSearchModal();
   else if (event.key === "Escape" && !$("#wishlistModal").hidden) closeWishlistModal();
   else if (event.key === "Escape" && !$("#wishlistDetail").hidden) closeWishlistDetail();
   else if (event.key === "Escape" && !$("#modal").hidden) closeModal();
@@ -1376,7 +1501,23 @@ $$(".type-link").forEach((el) => el.addEventListener("click", () => setView("col
 $$(".stat-card[data-stat-filter]").forEach((el) => el.addEventListener("click", () => setView("collection", { type: el.dataset.statFilter, status: "", origin: "" })));
 $$(".stat-card[data-stat-view]").forEach((el) => el.addEventListener("click", () => setView(el.dataset.statView, { type: "", status: "", origin: "" })));
 $("#viewAll").addEventListener("click", () => setView("collection", { type: "", status: "", origin: "" }));
-$("#addWishlistItem").addEventListener("click", () => openWishlistModal());
+$("#addWishlistItem").addEventListener("click", () => openWishlistSearchModal());
+$("#closeWishlistSearchModal").addEventListener("click", closeWishlistSearchModal);
+$("#cancelWishlistSearchModal").addEventListener("click", closeWishlistSearchModal);
+$("#wishlistAddManual").addEventListener("click", openWishlistManualModal);
+$("#wishlistSearchModal").addEventListener("click", (event) => {
+  if (event.target === $("#wishlistSearchModal")) closeWishlistSearchModal();
+});
+$("#wishlistSearchInput").addEventListener("input", scheduleWishlistSearch);
+$("#wishlistSearchFilters").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-wishlist-search-type]");
+  if (!button) return;
+  state.wishlistSearchType = button.dataset.wishlistSearchType;
+  $$("#wishlistSearchFilters button").forEach((candidate) =>
+    candidate.classList.toggle("active", candidate === button)
+  );
+  searchWishlistCandidates();
+});
 $("#closeWishlistModal").addEventListener("click", closeWishlistModal);
 $("#cancelWishlistModal").addEventListener("click", closeWishlistModal);
 $("#wishlistModal").addEventListener("click", (event) => {
