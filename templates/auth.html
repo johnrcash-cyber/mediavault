@@ -12,9 +12,17 @@
 </head>
 <body class="auth-page">
   <main class="auth-shell">
-    <a class="auth-brand" href="{{ url_for('index') }}">
-      <span class="brand-mark">MV</span>
-      <span><strong>MediaVault</strong><small>KNOW WHAT YOU OWN</small></span>
+    {% set form_values = values|default({}) %}
+    <a class="auth-brand" href="{{ url_for('index') }}" aria-label="MediaVault home">
+      <span class="auth-brand-mark" aria-hidden="true">
+        <span class="auth-vault-door"></span>
+        <span class="auth-media-stack"></span>
+        <span class="auth-disc"></span>
+      </span>
+      <span class="auth-brand-copy">
+        <strong>Media<span>Vault</span></strong>
+        <small>Know What You Own</small>
+      </span>
     </a>
     <section class="auth-card">
       {% if mode == "setup" %}
@@ -23,8 +31,8 @@
         <p>This first account manages access to MediaVault.</p>
         {% if error %}<p class="auth-error">{{ error }}</p>{% endif %}
         <form class="auth-form" method="post">
-          <label>Display Name<input name="display_name" required autocomplete="name" value="{{ values.display_name }}"></label>
-          <label>Email<input name="email" type="email" required autocomplete="email" value="{{ values.email }}"></label>
+          <label>Display Name<input name="display_name" required autocomplete="name" value="{{ form_values.display_name|default('') }}"></label>
+          <label>Email<input name="email" type="email" required autocomplete="email" value="{{ form_values.email|default('') }}"></label>
           <label>Password<input name="password" type="password" required minlength="8" autocomplete="new-password"></label>
           <label>Confirm Password<input name="confirm_password" type="password" required minlength="8" autocomplete="new-password"></label>
           <button class="button primary" type="submit">Create Admin Account</button>
@@ -40,7 +48,7 @@
         <p>Open your library and continue cataloging.</p>
         {% if error %}<p class="auth-error">{{ error }}</p>{% endif %}
         <form class="auth-form" method="post">
-          <label>Email<input name="email" type="email" required autocomplete="email" autofocus value="{{ values.email }}"></label>
+          <label>Email<input name="email" type="email" required autocomplete="email" autofocus value="{{ form_values.email|default('') }}"></label>
           <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
           <button class="button primary" type="submit">Sign In</button>
         </form>
