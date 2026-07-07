@@ -7,6 +7,29 @@ const savedSortDirection = localStorage.getItem("mediavault_sort_direction");
 const state = { query: "", type: "", status: "", origin: "", view: "dashboard", displayView: ["poster", "list"].includes(savedDisplayView) ? savedDisplayView : "poster", sortKey: sortableKeys.includes(savedSortKey) ? savedSortKey : "", sortDirection: ["asc", "desc"].includes(savedSortDirection) ? savedSortDirection : "asc", items: [], wishlistItems: [], wishlistDetailItem: null, wishlistSearchResults: [], wishlistSearchType: "all", returnToWishlistDetail: false, jellyfinPreview: null, previewCategory: "matches", quickItem: null, providerPriority: "omdb,tmdb", musicProviderPriority: "musicbrainz,discogs,coverartarchive,lastfm", musicProviders: ["musicbrainz"], settingsTab: "sources", catalogPreview: null, catalogCategory: "new_items" };
 const typeIcons = { Movies: "▶", Television: "TV", Music: "♫", Games: "✦", Books: "B", Other: "MV" };
 
+let sidebarScrollY = 0;
+
+function setSidebarOpen(open) {
+  const sidebar = $(".sidebar");
+  if (!sidebar) return;
+  const isOpen = sidebar.classList.contains("open");
+  if (open === isOpen) return;
+  if (open) {
+    sidebarScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    document.body.style.top = `-${sidebarScrollY}px`;
+  }
+  sidebar.classList.toggle("open", open);
+  document.body.classList.toggle("sidebar-open", open);
+  if (!open) {
+    document.body.style.top = "";
+    window.scrollTo(0, sidebarScrollY);
+  }
+}
+
+function closeSidebar() {
+  setSidebarOpen(false);
+}
+
 async function api(url, options = {}) {
   const response = await fetch(url, { headers: { "Content-Type": "application/json" }, ...options });
   if (!response.ok) {
@@ -386,7 +409,7 @@ function setView(view, filters = {}, options = {}) {
   $("#typeFilter").value = state.type;
   $("#statusFilter").value = state.status;
   $("#searchInput").value = state.query;
-  $(".sidebar").classList.remove("open");
+  closeSidebar();
   updateNavigationHistory(options.historyMode || "push");
   if (view === "dashboard") loadDashboard().catch((error) => toast(error.message));
   if (view === "collection") loadCollection();
@@ -1776,7 +1799,12 @@ $("#viewFailedItems").addEventListener("click", () => {
   $("#viewFailedItems").textContent = $("#failedItems").hidden ? "View failed items" : "Hide failed items";
 });
 }
-$("#menuButton").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
+$("#menuButton").addEventListener("click", () => {
+  setSidebarOpen(!$(".sidebar")?.classList.contains("open"));
+});
+window.addEventListener("resize", () => {
+  if (window.innerWidth > 800) closeSidebar();
+});
 $("#refreshLibraryAction").addEventListener("click", async () => {
   const button = $("#refreshLibraryAction");
   const original = button.innerHTML;
