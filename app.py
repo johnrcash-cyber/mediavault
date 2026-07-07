@@ -1550,6 +1550,74 @@ def create_catalog_item_from_source(
     return int(cursor.lastrowid)
 
 
+def remove_missing_source_item(
+    user_id: int, source_row: sqlite3.Row, now: str,
+) -> str:
+    """Detach or remove a MediaVault item that no longer exists in a source.
+
+    Source-created media can be deleted because the connected source is the
+    authority for that record. Source-attached rows are treated as possibly
+    manual/catalog-owned items, so only the missing source link is detached.
+    """
+    media_id = source_row["media_id"]
+    if media_id is None:
+        db().execute("DELETE FROM jellyfin_sources WHERE id = ?", (source_row["id"],))
+        return "source-row"
+
+    if source_row["action"] != "created":
+        db().execute(
+            "UPDATE jellyfin_sources SET media_id = NULL WHERE id = ?",
+            (source_row["id"],),
+        )
+        return "detached"
+
+    other_source = db().execute(
+        """
+        SELECT 1 FROM jellyfin_sources
+        WHERE user_id = ? AND media_id = ? AND id != ?
+          AND action IN ('attached', 'created')
+        LIMIT 1
+        """,
+        (user_id, media_id, source_row["id"]),
+    ).fetchone()
+    import_link = db().execute(
+        "SELECT 1 FROM catalog_import_links WHERE media_id = ? LIMIT 1",
+        (media_id,),
+    ).fetchone()
+    if other_source or import_link:
+        db().execute(
+            "UPDATE jellyfin_sources SET media_id = NULL WHERE id = ?",
+            (source_row["id"],),
+        )
+        return "detached-shared"
+
+    db().execute("DELETE FROM collection_items WHERE media_id = ?", (media_id,))
+    db().execute("DELETE FROM metadata_attachments WHERE media_id = ?", (media_id,))
+    db().execute("DELETE FROM jellyfin_sources WHERE id = ?", (source_row["id"],))
+    db().execute(
+        "UPDATE jellyfin_sources SET media_id = NULL WHERE media_id = ? AND user_id = ?",
+        (media_id, user_id),
+    )
+    db().execute(
+        "UPDATE catalog_import_links SET media_id = NULL WHERE media_id = ?",
+        (media_id,),
+    )
+    cursor = db().execute(
+        "DELETE FROM media WHERE id = ? AND owner_id = ?",
+        (media_id, user_id),
+    )
+    if cursor.rowcount != 1:
+        raise sqlite3.IntegrityError(
+            f"Missing source media was not deleted media_id={media_id}"
+        )
+    app.logger.info(
+        "Source reconciliation removed media_id=%s source_item_id=%s title=%r "
+        "removed_at=%s",
+        media_id, source_row["jellyfin_item_id"], source_row["source_title"], now,
+    )
+    return "deleted"
+
+
 def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
     user_id = user_id or active_user_id()
     settings = jellyfin_settings(user_id)
@@ -1565,7 +1633,7 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
     ).fetchall()
     result = {
         "processed": 0, "added": 0, "updated": 0, "restored": 0,
-        "skipped": 0, "failed": 0, "libraries": [],
+        "skipped": 0, "removed": 0, "failed": 0, "libraries": [],
     }
     now = datetime.now(timezone.utc).isoformat()
     for library in libraries:
@@ -1577,7 +1645,7 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
         library_result = {
             "id": library["library_id"], "name": library["name"],
             "category": category, "added": 0, "updated": 0,
-            "restored": 0, "skipped": 0, "failed": 0,
+            "restored": 0, "skipped": 0, "removed": 0, "failed": 0,
         }
         try:
             response = jellyfin_request(
@@ -1599,11 +1667,13 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                               "DateLastRefreshed",
                 },
             )
+            current_source_ids: set[str] = set()
             for raw in response.get("Items", []):
                 result["processed"] += 1
                 source = jellyfin_item_source(raw, library)
                 if not source["jellyfin_item_id"]:
                     continue
+                current_source_ids.add(source["jellyfin_item_id"])
                 if category == "Music":
                     if not source["has_poster"]:
                         verified, image_version, image_error = (
@@ -1820,6 +1890,36 @@ def sync_jellyfin_libraries(user_id: int | None = None) -> dict:
                         "poster_url=%s",
                         source["jellyfin_item_id"], media_id,
                         source["has_poster"], source.get("poster_url") or "",
+                    )
+            stale_rows = db().execute(
+                """
+                SELECT * FROM jellyfin_sources
+                WHERE user_id = ? AND server_url = ?
+                  AND jellyfin_library_id = ?
+                  AND action IN ('attached', 'created')
+                """,
+                (user_id, server_url, library["library_id"]),
+            ).fetchall()
+            for stale in stale_rows:
+                if stale["jellyfin_item_id"] in current_source_ids:
+                    continue
+                try:
+                    mode = remove_missing_source_item(user_id, stale, now)
+                    result["removed"] += 1
+                    library_result["removed"] += 1
+                    app.logger.info(
+                        "Source reconciliation missing source_item_id=%s "
+                        "library_id=%s media_id=%s action=%s mode=%s",
+                        stale["jellyfin_item_id"], library["library_id"],
+                        stale["media_id"], stale["action"], mode,
+                    )
+                except sqlite3.Error as exc:
+                    result["failed"] += 1
+                    library_result["failed"] += 1
+                    app.logger.exception(
+                        "Source reconciliation failed source_item_id=%s "
+                        "media_id=%s error=%s",
+                        stale["jellyfin_item_id"], stale["media_id"], exc,
                     )
             total = db().execute(
                 "SELECT COUNT(*) FROM jellyfin_sources js "
