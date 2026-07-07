@@ -3174,6 +3174,7 @@ def administration():
         error=error,
         success=success,
         registration_mode=app.config["REGISTRATION_MODE"],
+        theme=user_theme(int(user["id"])),
     )
 
 
@@ -3182,7 +3183,11 @@ def administration_metadata_providers():
     user = require_admin()
     if not user:
         return render_template("forbidden.html"), 403
-    return render_template("admin_metadata_providers.html", user=user)
+    return render_template(
+        "admin_metadata_providers.html",
+        user=user,
+        theme=user_theme(int(user["id"])),
+    )
 
 
 def scheduled_job_dict(row: sqlite3.Row) -> dict:

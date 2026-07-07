@@ -9,6 +9,7 @@ button{color:inherit}
 .brand-mark,.promise-mark{width:38px;height:38px;background:var(--accent);color:#131316;display:grid;place-items:center;border-radius:7px;font:800 13px Manrope;letter-spacing:-.5px;box-shadow:inset 0 -4px 10px #c94f3b}
 .brand strong{font:800 18px Manrope;display:block;letter-spacing:-.6px}
 .brand small{font-size:8px;letter-spacing:1.8px;color:#777981}
+.brand.app-brand{gap:12px;padding:0 8px 34px;min-width:0}.account-nav .brand.app-brand{padding:0;margin-right:auto}.brand-vault-icon{position:relative;display:block;flex:0 0 58px;width:58px;height:58px;filter:drop-shadow(0 9px 12px rgba(0,0,0,.28))}.brand-media-stack{position:absolute;right:4px;top:8px;width:31px;height:43px;border-radius:5px;background:linear-gradient(135deg,#edf2f7,#6b7280 54%,#17202c);box-shadow:inset -4px 0 0 rgba(255,255,255,.28),inset 0 0 0 1px rgba(255,255,255,.18)}.brand-media-stack:before{content:"";position:absolute;right:4px;top:6px;width:4px;height:4px;border-radius:1px;background:#111827;box-shadow:0 10px 0 #111827,0 20px 0 #111827,0 30px 0 #111827}.brand-vault-door{position:absolute;left:0;top:4px;width:35px;height:50px;border-radius:7px 4px 4px 7px;background:linear-gradient(145deg,#f8fafc 0,#9aa7b7 38%,#263241 100%);box-shadow:inset -5px 0 9px rgba(15,23,42,.33),inset 2px 2px 5px rgba(255,255,255,.6);transform:perspective(110px) rotateY(-14deg);z-index:2}.brand-vault-door:before{content:"";position:absolute;left:11px;top:18px;width:14px;height:14px;border-radius:50%;background:radial-gradient(circle,#eef6ff 0 13%,#344154 14% 31%,#dbe3ec 32% 38%,#1d2734 39% 100%);box-shadow:0 0 0 3px rgba(255,255,255,.22),inset 0 0 0 2px rgba(15,23,42,.22)}.brand-vault-door:after{content:"";position:absolute;left:4px;top:11px;width:3px;height:8px;border-radius:2px;background:#5f6f81;box-shadow:0 14px 0 #5f6f81,0 28px 0 #5f6f81}.brand-disc{position:absolute;right:14px;bottom:10px;width:19px;height:19px;border-radius:50%;background:radial-gradient(circle,var(--brand-vault-color,#4f9cff) 0 14%,#dbeafe 15% 38%,#64748b 39% 54%,#eff6ff 55% 100%);z-index:1}.brand-wordmark{min-width:0}.brand-wordmark strong{font:800 22px/.95 Manrope;letter-spacing:-1.1px;color:var(--text);white-space:nowrap}.brand-wordmark strong span{color:var(--brand-vault-color,#4f9cff)}.brand-wordmark small{display:block;margin-top:6px;font:800 7px/1 Manrope;letter-spacing:2px;text-transform:uppercase;color:var(--muted);white-space:nowrap}
 .sidebar nav{display:flex;flex-direction:column;gap:3px}
 .nav-link{border:0;background:none;text-align:left;padding:10px 12px;border-radius:7px;color:#96979d;cursor:pointer;display:flex;gap:13px;align-items:center;font-weight:500}
 .nav-link span{font-size:17px;width:18px;text-align:center}
@@ -115,6 +116,10 @@ summary{cursor:pointer;font-weight:700;color:#bbb;display:flex;justify-content:s
   .app-shell{display:block}
   .sidebar{transform:translateX(-100%);transition:.25s;box-shadow:var(--shadow)}
   .sidebar.open{transform:none}
+  .brand.app-brand{padding-bottom:26px}
+  .brand-vault-icon{flex-basis:50px;width:50px;height:50px}
+  .brand-wordmark strong{font-size:20px}
+  .brand-wordmark small{font-size:6px;letter-spacing:1.7px}
   main{grid-column:auto}
   .menu-button{display:block}
   .topbar{padding:0 18px}

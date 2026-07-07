@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="{{ theme|default('mediavault-dark') }}">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Metadata Providers — MediaVault Administration</title>
@@ -7,11 +7,12 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='base.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='themes.css') }}">
 </head>
 <body class="account-page admin-provider-page">
   <main class="account-wrap provider-admin-wrap">
     <nav class="account-nav">
-      <a class="brand" href="{{ url_for('index') }}"><span class="brand-mark">MV</span><span><strong>MediaVault</strong><small>KNOW WHAT YOU OWN</small></span></a>
+      <a class="brand app-brand" href="{{ url_for('index') }}" aria-label="MediaVault home"><span class="brand-vault-icon" aria-hidden="true"><span class="brand-vault-door"></span><span class="brand-media-stack"></span><span class="brand-disc"></span></span><span class="brand-wordmark"><strong>Media<span>Vault</span></strong><small>Your Media. Your Vault.</small></span></a>
       <a href="{{ url_for('administration') }}">Administration</a>
       <a href="{{ url_for('profile') }}">Profile</a>
       <form action="{{ url_for('logout') }}" method="post"><button type="submit">Logout</button></form>
