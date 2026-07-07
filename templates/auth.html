@@ -55,6 +55,52 @@
         <div class="auth-links"><a href="{{ url_for('forgot_password') }}">Forgot Password?</a><span>Accounts are admin-managed.</span></div>
       {% endif %}
     </section>
+    {% if mode not in ["setup", "forgot"] %}
+      <section class="auth-marketing" aria-label="About MediaVault">
+        <div class="auth-marketing-divider" aria-hidden="true"></div>
+        <h2>Know What You Own</h2>
+        <p>
+          MediaVault is your personal collection hub. Bring together your movies,
+          TV shows, music, games, books, and more into one organized library.
+          Track what you own, remember what you want, and share your collection
+          with friends—all from a single place.
+        </p>
+        <p class="auth-trust">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V8a5 5 0 0 1 10 0v2h1.25A1.75 1.75 0 0 1 20 11.75v7.5A1.75 1.75 0 0 1 18.25 21H5.75A1.75 1.75 0 0 1 4 19.25v-7.5A1.75 1.75 0 0 1 5.75 10H7Zm2 0h6V8a3 3 0 0 0-6 0v2Zm3 4a1.5 1.5 0 0 0-.75 2.8V18h1.5v-1.2A1.5 1.5 0 0 0 12 14Z"/></svg>
+          Your media stays safely stored where it's always been.
+        </p>
+        <div class="auth-feature-row">
+          <article>
+            <span class="auth-feature-icon blue"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5v-11Zm3 .5v3h10V7H7Zm0 5v5h4v-5H7Zm6 0v5h4v-5h-4Z"/></svg></span>
+            <h3>Bring It Together</h3>
+            <p>Connect your media sources and combine all your collections in one place.</p>
+          </article>
+          <article>
+            <span class="auth-feature-icon green"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm4-1h11v2H10V6Zm-4 6a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm4-1h11v2H10v-2Zm-4 6a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm4-1h11v2H10v-2Z"/></svg></span>
+            <h3>Organize Your Way</h3>
+            <p>Sort, filter, and customize your library to match how you think.</p>
+          </article>
+          <article>
+            <span class="auth-feature-icon purple"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7-4.4-9.4-8.2C.4 9.4 2.6 5 6.6 5c2 0 3.4 1 4.2 2.2C11.6 6 13 5 15 5c4 0 6.2 4.4 4 7.8C19 16.6 12 21 12 21Z"/></svg></span>
+            <h3>Track &amp; Remember</h3>
+            <p>Keep track of what you own and build wishlists for what comes next.</p>
+          </article>
+          <article>
+            <span class="auth-feature-icon orange"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm6.8 1.2A3.2 3.2 0 1 0 15.8 6a3.2 3.2 0 0 0 0 6.2ZM9 13c-4.4 0-7 2.2-7 5v1h14v-1c0-2.8-2.6-5-7-5Zm7.2.3c.7.8 1.1 1.8 1.1 3V19H22v-.9c0-2.4-2.1-4.3-5.8-4.8Z"/></svg></span>
+            <h3>Share &amp; Compare</h3>
+            <p>Share your collection with friends and compare libraries.</p>
+          </article>
+          <article>
+            <span class="auth-feature-icon blue"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2.5 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.3l-5.8 3.1 1.1-6.5-4.7-4.6 6.5-.9L12 2.5Z"/></svg></span>
+            <h3>Discover More</h3>
+            <p>Find missing titles, discover recommendations, and grow your collection.</p>
+          </article>
+        </div>
+        <p class="auth-footer-tagline">
+          Your media. Your vault. <strong>Anytime. Anywhere.</strong>
+        </p>
+      </section>
+    {% endif %}
   </main>
 </body>
 </html>
