@@ -44,7 +44,8 @@ body{background:var(--bg);color:var(--text)}
 .global-search,.media-card,.stat-card,.modal,.quick-view,.user-settings-panel,
 .user-source-row,.metadata-service-row,.settings-panel,.source-health-panel,
 .source-model-card,.source-accordion,.auth-card,.account-card,
-.profile-avatar-section,.profile-section{background:var(--panel);border-color:var(--line);color:var(--text)}
+.profile-avatar-section,.profile-section,.provider-key-table,.provider-key-row,
+.provider-key-note,.music-source-order li{background:var(--panel);border-color:var(--line);color:var(--text)}
 .global-search input,.form-grid input,.form-grid select,.form-grid textarea,
 .settings-form input,.settings-form select,.auth-form input,.auth-form select{
   background:var(--input);border-color:var(--line);color:var(--text)

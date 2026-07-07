@@ -60,6 +60,28 @@ function renderSourceStatus(statuses) {
     }).join("");
 }
 
+function updateProviderRow(provider, hasCredential) {
+  const row = document.querySelector(`[data-provider-row="${provider}"]`);
+  if (!row) return;
+  const secret = row.querySelector(`[data-secret-for="${provider}"]`);
+  const status = row.querySelector(`[data-status-for="${provider}"]`);
+  if (secret) secret.textContent = hasCredential ? "••••••••••••••••" : "Missing";
+  if (status) {
+    status.textContent = hasCredential ? "Active" : "Missing";
+    status.className = `provider-status ${hasCredential ? "active" : "missing"}`;
+  }
+}
+
+function markProviderTested(provider, result) {
+  const tested = document.querySelector(`[data-tested-for="${provider}"]`);
+  const status = document.querySelector(`[data-status-for="${provider}"]`);
+  if (tested) tested.textContent = `${new Date().toLocaleString()} · ${result}`;
+  if (status && result === "Success") {
+    status.textContent = "Active";
+    status.className = "provider-status active";
+  }
+}
+
 async function loadSourceStatus() {
   renderSourceStatus(await api("/api/source-status"));
 }
@@ -91,6 +113,11 @@ async function loadProviderSettings() {
     ? "Last.fm key saved — leave blank to keep it" : "Optional";
   $("#rawgKey").placeholder = data.has_rawg_api_key
     ? "RAWG key saved — leave blank to keep it" : "Optional";
+  updateProviderRow("omdb", data.has_omdb_api_key);
+  updateProviderRow("tmdb", data.has_tmdb_api_key);
+  updateProviderRow("discogs", data.has_discogs_token);
+  updateProviderRow("lastfm", data.has_lastfm_api_key);
+  updateProviderRow("rawg", data.has_rawg_api_key);
 }
 
 $("#providerForm").addEventListener("submit", async (event) => {
@@ -128,10 +155,12 @@ async function testProvider(provider, button, successLabel) {
     });
     $("#tmdbBadge").textContent = successLabel;
     $("#tmdbBadge").classList.add("connected");
+    markProviderTested(provider, "Success");
   } catch (error) {
     $("#tmdbBadge").textContent = "Connection failed";
     $("#tmdbBadge").classList.remove("connected");
     $("#providerError").textContent = error.message;
+    markProviderTested(provider, "Failed");
   } finally {
     button.disabled = false;
     button.textContent = original;
@@ -144,6 +173,29 @@ $("#testOmdb").addEventListener("click", () =>
 $("#testTmdb").addEventListener("click", () =>
   testProvider("tmdb", $("#testTmdb"), "TMDb connected")
 );
+
+document.querySelectorAll("[data-manage-provider]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const provider = button.dataset.manageProvider;
+    const panel = document.querySelector(`[data-provider-panel="${provider}"]`);
+    if (!panel) return;
+    panel.hidden = !panel.hidden;
+    button.textContent = panel.hidden ? "Manage" : "Close";
+  });
+});
+
+$("#addProviderKey").addEventListener("click", () => {
+  const firstClosed = document.querySelector(".provider-manage-panel[hidden]");
+  if (!firstClosed) {
+    toast("All provider key panels are already open.");
+    return;
+  }
+  firstClosed.hidden = false;
+  const provider = firstClosed.dataset.providerPanel;
+  const button = document.querySelector(`[data-manage-provider="${provider}"]`);
+  if (button) button.textContent = "Close";
+  firstClosed.querySelector("input")?.focus();
+});
 
 $("#refreshSourceStatus").addEventListener("click", async () => {
   const button = $("#refreshSourceStatus");
