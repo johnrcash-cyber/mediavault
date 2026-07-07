@@ -299,12 +299,16 @@
     <div class="modal wishlist-search-modal" role="dialog" aria-modal="true" aria-labelledby="wishlistSearchTitle">
       <div class="modal-head">
         <div><p class="eyebrow">WISHLIST SEARCH</p><h2 id="wishlistSearchTitle">Add to Wishlist</h2></div>
-        <button class="icon-button" id="closeWishlistSearchModal" aria-label="Close">Ã—</button>
+        <button class="icon-button" id="closeWishlistSearchModal" aria-label="Close wishlist search">
+          <svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" focusable="false">
+            <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
       </div>
       <div class="wishlist-search-body">
         <label class="wishlist-search-field">
           <span>Search movies, shows, music, and games</span>
-          <input id="wishlistSearchInput" autocomplete="off" placeholder="Start typing a title or albumâ€¦">
+          <input id="wishlistSearchInput" autocomplete="off" placeholder="Start typing a title or album...">
         </label>
         <div class="wishlist-search-filters" id="wishlistSearchFilters" hidden>
           <button class="active" data-wishlist-search-type="all">All</button>
