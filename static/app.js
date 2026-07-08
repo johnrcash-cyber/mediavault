@@ -361,6 +361,7 @@ function navigationHash() {
     return `#/${mediaTypeRoutes[state.type] || "library"}`;
   }
   if (state.view === "wishlist") return "#/wishlist";
+  if (state.view === "invite") return "#/invite-friends";
   if (state.view === "settings") return `#/settings/${state.settingsTab}`;
   return "#/dashboard";
 }
@@ -380,6 +381,7 @@ function navigationFromLocation(historyState = null) {
   if (historyState?.mediavault) return historyState;
   const parts = window.location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (parts[0] === "wishlist") return { view: "wishlist" };
+  if (parts[0] === "invite" || parts[0] === "invite-friends") return { view: "invite" };
   if (parts[0] === "settings") {
     return {
       view: "settings",
@@ -403,6 +405,7 @@ function setView(view, filters = {}, options = {}) {
   $("#dashboardView").hidden = view !== "dashboard";
   $("#collectionView").hidden = view !== "collection";
   $("#wishlistView").hidden = view !== "wishlist";
+  $("#inviteView").hidden = view !== "invite";
   $("#settingsView").hidden = view !== "settings";
   $$(".nav-link").forEach((el) => el.classList.remove("active"));
   $(`[data-view="${view}"]`)?.classList.add("active");
@@ -1236,6 +1239,31 @@ function toast(message, duration = 2200) {
   setTimeout(() => $("#toast").classList.remove("show"), duration);
 }
 
+async function copyInviteLink() {
+  const inviteUrl = $("#inviteLinkValue")?.value || "https://mediavault.gridandink.com";
+  const status = $("#inviteCopyStatus");
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(inviteUrl);
+    } else {
+      const fallback = document.createElement("textarea");
+      fallback.value = inviteUrl;
+      fallback.setAttribute("readonly", "");
+      fallback.style.position = "fixed";
+      fallback.style.opacity = "0";
+      document.body.appendChild(fallback);
+      fallback.select();
+      document.execCommand("copy");
+      fallback.remove();
+    }
+    if (status) status.textContent = "Link copied.";
+    toast("Invite link copied.");
+  } catch (error) {
+    if (status) status.textContent = "Copy failed. Select and copy the link manually.";
+    toast("Copy failed. Select and copy the link manually.", 4000);
+  }
+}
+
 function downloadCatalogExport() {
   const link = document.createElement("a");
   link.href = "/api/catalog/export";
@@ -1524,6 +1552,8 @@ $$(".type-link").forEach((el) => el.addEventListener("click", () => setView("col
 $$(".stat-card[data-stat-filter]").forEach((el) => el.addEventListener("click", () => setView("collection", { type: el.dataset.statFilter, status: "", origin: "" })));
 $$(".stat-card[data-stat-view]").forEach((el) => el.addEventListener("click", () => setView(el.dataset.statView, { type: "", status: "", origin: "" })));
 $("#viewAll").addEventListener("click", () => setView("collection", { type: "", status: "", origin: "" }));
+$("#copyInviteLink")?.addEventListener("click", copyInviteLink);
+$$("[data-copy-invite]").forEach((button) => button.addEventListener("click", copyInviteLink));
 $("#addWishlistItem").addEventListener("click", () => openWishlistSearchModal());
 $("#closeWishlistSearchModal").addEventListener("click", closeWishlistSearchModal);
 $("#cancelWishlistSearchModal").addEventListener("click", closeWishlistSearchModal);

@@ -56,6 +56,10 @@
         <button class="nav-link" data-view="wishlist"><span>♡</span> Wishlist</button>
         <p class="nav-label">SYSTEM</p>
         <button class="nav-link" id="refreshLibraryAction"><span>↻</span> Refresh Library</button>
+        <button class="nav-link invite-nav-link" data-view="invite">
+          <span aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M16.5 11a3 3 0 1 0-2.7-4.3A4.8 4.8 0 0 1 14 8a4.7 4.7 0 0 1-.8 2.6A3 3 0 0 0 16.5 11Zm-9 0a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm0 2c-2.8 0-5.5 1.4-5.5 3.7V18c0 .6.4 1 1 1h9c.6 0 1-.4 1-1v-1.3C13 14.4 10.3 13 7.5 13Zm9 0c-.6 0-1.2.1-1.8.2 1.4.9 2.3 2.1 2.3 3.5V18c0 .4-.1.7-.2 1H21c.6 0 1-.4 1-1v-1.1c0-2.3-2.7-3.9-5.5-3.9Z"/></svg></span>
+          <span class="nav-copy">Invite Friends<small>Use MediaVault. It's free.</small></span>
+        </button>
         <button class="nav-link" data-view="settings"><span>⚙</span> Settings</button>
         {% if is_admin %}<a class="nav-link" href="{{ url_for('administration') }}"><span>◆</span> Administration</a>{% endif %}
       </nav>
@@ -131,6 +135,52 @@
             </div>
           </div>
           <div id="wishlistGrid" class="media-grid collection-grid wishlist-grid"></div>
+        </section>
+
+        <section id="inviteView" hidden>
+          <div class="page-heading invite-heading">
+            <div>
+              <p class="eyebrow">SHARING</p>
+              <h1>Invite Friends</h1>
+              <p>Help your friends organize their collections with MediaVault. It's free.</p>
+            </div>
+          </div>
+          <div class="invite-layout">
+            <section class="invite-card invite-link-card">
+              <div class="invite-card-head">
+                <div>
+                  <h2>Your invite link</h2>
+                  <p>Share MediaVault with someone who loves knowing what they own.</p>
+                </div>
+              </div>
+              <div class="invite-link-row">
+                <input id="inviteLinkValue" value="https://mediavault.gridandink.com" readonly aria-label="Invite link">
+                <button class="button primary" id="copyInviteLink" type="button">
+                  <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false"><path d="M8 7a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3h-1v-2h1a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v1H8V7Zm-4 5a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3v-5Zm3-1a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-5a1 1 0 0 0-1-1H7Z"/></svg>
+                  Copy Link
+                </button>
+              </div>
+              <p class="invite-helper">Anyone who signs up using your link will be able to create their own free account.</p>
+              <p class="invite-copy-status" id="inviteCopyStatus" role="status"></p>
+              <div class="invite-share-section">
+                <h3>Share using</h3>
+                <div class="invite-share-grid">
+                  <button class="invite-share-button discord" type="button" data-copy-invite><span><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M19.4 5.4A15.8 15.8 0 0 0 15.5 4l-.2.4a14 14 0 0 1 3.4 1.7 10.7 10.7 0 0 0-8.4 0 14 14 0 0 1 3.4-1.7l-.2-.4a15.8 15.8 0 0 0-3.9 1.4C7.2 9 6.6 12.5 7 16c1.6 1.2 3.2 1.9 4.8 2.3l.6-1a8.1 8.1 0 0 1-2.2-1c.2-.1.3-.2.5-.4 4.2 1.9 8.7 1.9 12.8 0l.5.4a8.1 8.1 0 0 1-2.2 1l.6 1c1.6-.4 3.2-1.1 4.8-2.3.5-4.1-.7-7.5-2.8-10.6ZM12.6 14c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.7 1.7-1.5 1.7Zm5.4 0c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.7 1.7-1.5 1.7Z"/></svg></span>Discord</button>
+                  <a class="invite-share-button facebook" href="https://www.facebook.com/sharer/sharer.php?u=https%3A%2F%2Fmediavault.gridandink.com" target="_blank" rel="noopener noreferrer"><span><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 8h2V4h-2c-3.3 0-5 2-5 5v2H6v4h3v7h4v-7h3l1-4h-4V9c0-.7.3-1 1-1Z"/></svg></span>Facebook</a>
+                  <a class="invite-share-button x" href="https://twitter.com/intent/tweet?url=https%3A%2F%2Fmediavault.gridandink.com&text=Know%20What%20You%20Own%20with%20MediaVault." target="_blank" rel="noopener noreferrer"><span><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 4h4.7l4.2 5.6L17.8 4H20l-6 7 6.6 9H16l-4.8-6.4L5.7 20H3.4l6.7-7.8L4 4Zm3.3 1.7 9.5 12.6h1.6L8.9 5.7H7.3Z"/></svg></span>X</a>
+                  <a class="invite-share-button reddit" href="https://www.reddit.com/submit?url=https%3A%2F%2Fmediavault.gridandink.com&title=MediaVault%20-%20Know%20What%20You%20Own" target="_blank" rel="noopener noreferrer"><span><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 11a2 2 0 0 0-3.3-1.5 10 10 0 0 0-4.8-1.4l.8-3 2.7.6a1.7 1.7 0 1 0 .3-1.3l-3.4-.7c-.4-.1-.8.1-.9.5l-1 3.9a10.1 10.1 0 0 0-5.1 1.4A2 2 0 1 0 4 12.7c0 .2 0 .4.1.6A5.3 5.3 0 0 0 4 14c0 3.3 3.6 6 8 6s8-2.7 8-6c0-.2 0-.5-.1-.7.7-.3 1.1-.9 1.1-1.7V11ZM8.5 13.2a1.4 1.4 0 1 1 0-2.8 1.4 1.4 0 0 1 0 2.8Zm6.8 3.5c-.9.8-2 .9-3.3.9s-2.4-.2-3.3-.9c-.2-.2-.2-.5 0-.7.2-.2.5-.2.7 0 .5.5 1.4.7 2.6.7s2.1-.2 2.6-.7c.2-.2.5-.2.7 0 .2.2.2.5 0 .7Zm.2-3.5a1.4 1.4 0 1 1 0-2.8 1.4 1.4 0 0 1 0 2.8Z"/></svg></span>Reddit</a>
+                  <a class="invite-share-button email" href="mailto:?subject=Try%20MediaVault&body=MediaVault%20helps%20you%20know%20what%20you%20own.%20It's%20free%3A%20https%3A%2F%2Fmediavault.gridandink.com"><span><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Zm8 7 8-5H4l8 5Zm0 2.3L4 9.3V17h16V9.3l-8 5Z"/></svg></span>Email</a>
+                </div>
+              </div>
+            </section>
+            <section class="invite-community-card">
+              <span class="invite-community-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M8 12a4 4 0 1 1 0-8 4 4 0 0 1 0 8Zm8.5-.5a3.2 3.2 0 1 1 0-6.4 3.2 3.2 0 0 1 0 6.4ZM8 14c-3.4 0-6 1.8-6 4.2V20c0 .6.4 1 1 1h10c.6 0 1-.4 1-1v-1.8C14 15.8 11.4 14 8 14Zm8.5-.5c-.8 0-1.6.1-2.3.4 1.2 1 1.8 2.4 1.8 4.3V20c0 .4-.1.7-.2 1H21c.6 0 1-.4 1-1v-1.5c0-2.8-2.3-5-5.5-5Z"/></svg></span>
+              <div>
+                <h2>Invite friends. Build the community.</h2>
+                <p>MediaVault is free to use. Invite your friends, compare collections in future updates, and help grow the MediaVault community.</p>
+              </div>
+            </section>
+          </div>
         </section>
 
         <section id="settingsView" hidden>
