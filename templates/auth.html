@@ -43,7 +43,6 @@
         <p>Password reset coming soon.</p>
         <div class="auth-links"><a href="{{ url_for('sign_in') }}">← Back to Sign In</a></div>
       {% else %}
-        <p class="eyebrow">WELCOME BACK</p>
         <h1>Sign In</h1>
         <p>Open your library and continue cataloging.</p>
         {% if error %}<p class="auth-error">{{ error }}</p>{% endif %}
